@@ -1,0 +1,21 @@
+[package]
+name = "nextui-updater-rs"
+version = "0.1.0"
+edition = "2021"
+
+[profile]
+dev.strip = "debuginfo"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+egui_sdl2_gl = "0.31.0"
+reqwest = { version = "0.12.15", features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+], default-features = false }
+sdl2 = { version = "0.37.0", features = ["bundled"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+zip = "2.4.2"
