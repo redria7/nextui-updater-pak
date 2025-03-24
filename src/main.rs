@@ -2,11 +2,11 @@ use egui::{Button, Color32, FullOutput, ProgressBar};
 use egui_backend::egui;
 use egui_backend::{sdl2::event::Event, DpiScaling, ShaderVersion};
 use egui_sdl2_gl as egui_backend;
+use egui_sdl2_gl::egui::RichText;
 use serde::Deserialize;
 use std::{
     fs::File,
     io::{Cursor, Read, Write},
-    path::Path,
     sync::{Arc, Mutex},
     thread,
     time::Instant,
@@ -15,6 +15,7 @@ use std::{
 // Define GitHub API response structures
 #[derive(Deserialize, Clone, Debug)]
 struct Asset {
+    name: String,
     browser_download_url: String,
 }
 
@@ -35,7 +36,7 @@ struct AppState {
 // Constants
 const GITHUB_API_URL: &str = "https://api.github.com/repos/LoveRetro/NextUI/releases/latest";
 const USER_AGENT: &str = "NextUI Updater";
-const OUTPUT_PATH: &str = "/mnt/SDCARD/MinUI.zip";
+const OUTPUT_PATH: &str = "/mnt/SDCARD/";
 const WINDOW_WIDTH: u32 = 1024;
 const WINDOW_HEIGHT: u32 = 768;
 const DPI_SCALE: f32 = 3.0;
@@ -43,22 +44,21 @@ const DPI_SCALE: f32 = 3.0;
 // Error type for the application
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-fn do_update(app_state: Arc<Mutex<AppState>>) {
+fn do_fetch(app_state: Arc<Mutex<AppState>>) {
     thread::spawn(move || {
-        if let Err(err) = update_process(app_state.clone()) {
+        if let Err(err) = fetch_latest_release(app_state.clone()) {
             let mut state = app_state.lock().unwrap();
             state.current_operation = None;
-            state.error = Some(format!("Update failed: {}", err));
+            state.error = Some(format!("Fetch failed: {}", err));
         }
     });
 }
 
-fn update_process(app_state: Arc<Mutex<AppState>>) -> Result<()> {
+fn fetch_latest_release(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     // Fetch latest release information
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some("Fetching latest release...".to_string());
-        state.progress = Some(0.1);
     }
 
     let client = reqwest::blocking::Client::new();
@@ -76,44 +76,72 @@ fn update_process(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     {
         let mut state = app_state.lock().unwrap();
         state.latest_release = Some(release.clone());
+        state.current_operation = None;
+    }
+
+    Ok(())
+}
+
+fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
+    thread::spawn(move || {
+        if let Err(err) = update_process(app_state.clone(), full) {
+            let mut state = app_state.lock().unwrap();
+            state.current_operation = None;
+            state.error = Some(format!("Update failed: {}", err));
+        }
+    });
+}
+
+fn update_process(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
+    let release = {
+        let mut state = app_state.lock().unwrap();
         state.current_operation = Some("Downloading update...".to_string());
         state.progress = Some(0.3);
-    }
 
-    // Download the release
-    let asset = release.assets.first().ok_or("No assets found in release")?;
+        state.latest_release.clone().ok_or("No release found")?
+    };
 
-    let response = reqwest::blocking::get(&asset.browser_download_url)?;
-    let bytes = response.bytes()?;
-
-    {
-        let mut state = app_state.lock().unwrap();
-        state.current_operation = Some("Extracting files...".to_string());
-        state.progress = Some(0.6);
-    }
-
-    // Extract the update package
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
-
-    // Look for MinUI.zip in the archive
-    let mut minui_data = Vec::new();
-    match archive.by_name("MinUI.zip") {
-        Ok(mut file) => {
-            file.read_to_end(&mut minui_data)?;
+    for asset in release.assets.iter() {
+        // Download the asset
+        {
+            let mut state = app_state.lock().unwrap();
+            state.current_operation = format!("Downloading {}...", asset.name).into();
+            state.progress = Some(0.3);
         }
-        Err(_) => return Err("File MinUI.zip not found in archive".into()),
-    }
+        let response = reqwest::blocking::get(&asset.browser_download_url)?;
+        let bytes = response.bytes()?;
 
-    // Create the output directory if it doesn't exist
-    if let Some(parent) = Path::new(OUTPUT_PATH).parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
+        {
+            let mut state = app_state.lock().unwrap();
+            state.current_operation = format!("Extracting {}...", asset.name).into();
+            state.progress = Some(0.6);
+        }
+
+        // Extract the update package
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+
+        if !full {
+            // "Quick" update, just extract MinUI.zip
+
+            // Look for MinUI.zip in the archive
+            let mut minui_data = Vec::new();
+            match archive.by_name("MinUI.zip") {
+                Ok(mut file) => {
+                    file.read_to_end(&mut minui_data)?;
+                }
+                Err(_) => return Err("File MinUI.zip not found in archive".into()),
+            }
+
+            // Write the extracted file
+            let mut file = File::create([OUTPUT_PATH, "MinUI.zip"].join("/"))?;
+            file.write_all(&minui_data)?;
+
+            break; // Done!
+        } else {
+            // Full update, extract all files
+            archive.extract(OUTPUT_PATH)?;
         }
     }
-
-    // Write the extracted file
-    let mut file = File::create(OUTPUT_PATH)?;
-    file.write_all(&minui_data)?;
 
     {
         let mut state = app_state.lock().unwrap();
@@ -224,7 +252,10 @@ fn main() -> Result<()> {
         error: None,
     }));
 
-    let start_time = Instant::now();
+    // Fetch latest release information
+    do_fetch(app_state.clone());
+
+    let start_time: Instant = Instant::now();
     let mut quit = false;
 
     'running: loop {
@@ -235,7 +266,6 @@ fn main() -> Result<()> {
         egui::CentralPanel::default().show(&egui_ctx, |ui| {
             ui.vertical_centered_justified(|ui| {
                 ui.heading("NextUI Updater");
-                ui.add_space(32.0);
 
                 // Check application state
                 let state_lock = app_state.lock().unwrap();
@@ -243,6 +273,7 @@ fn main() -> Result<()> {
                 drop(state_lock);
 
                 // Quit button
+                ui.add_space(8.0);
                 if ui.button("Quit").clicked() {
                     quit = true;
                 }
@@ -250,11 +281,32 @@ fn main() -> Result<()> {
                 ui.separator();
                 ui.add_space(8.0);
 
-                // Update button
-                let update_button =
-                    ui.add_enabled(!update_in_progress, Button::new("Update NextUI"));
+                // Show release information if available
+                if let Some(release) = &app_state.lock().unwrap().latest_release {
+                    ui.label(format!("Latest version: {}", release.tag_name));
+                    ui.add_space(8.0);
+                }
 
-                ui.add_space(16.0);
+                // Update buttons
+                let quick_update_button =
+                    ui.add_enabled(!update_in_progress, Button::new("Quick Update"));
+                ui.label(
+                    RichText::new("MinUI.zip only")
+                        .font(egui::FontId::proportional(8.0))
+                        .color(Color32::from_rgb(150, 150, 150)),
+                );
+
+                ui.add_space(8.0);
+
+                let full_update_button =
+                    ui.add_enabled(!update_in_progress, Button::new("Full Update"));
+                ui.label(
+                    RichText::new("Extract full zip files (base + extras)")
+                        .font(egui::FontId::proportional(8.0))
+                        .color(Color32::from_rgb(150, 150, 150)),
+                );
+
+                ui.add_space(8.0);
 
                 // Display current operation
                 if let Some(operation) = &app_state.lock().unwrap().current_operation {
@@ -273,23 +325,23 @@ fn main() -> Result<()> {
                     ui.add(ProgressBar::new(progress).show_percentage().animate(true));
                 }
 
-                // Show release information if available
-                if let Some(release) = &app_state.lock().unwrap().latest_release {
-                    ui.add_space(16.0);
-                    ui.label(format!("Latest version: {}", release.tag_name));
-                }
-
                 // Initiate update if button clicked
-                if update_button.clicked() {
+                if quick_update_button.clicked() {
                     // Clear any previous errors
                     app_state.lock().unwrap().error = None;
-                    do_update(app_state.clone());
+                    do_update(app_state.clone(), false);
+                }
+
+                if full_update_button.clicked() {
+                    // Clear any previous errors
+                    app_state.lock().unwrap().error = None;
+                    do_update(app_state.clone(), true);
                 }
 
                 // Focus the update button for controller navigation
                 ui.memory_mut(|r| {
                     if r.focused().is_none() {
-                        r.request_focus(update_button.id);
+                        r.request_focus(quick_update_button.id);
                     }
                 });
             });
