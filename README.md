@@ -1,3 +1,5 @@
+![](./doc/screenshot.png)
+
 # NextUI OTA Updater PAK
 
 A PAK for updating NextUI on-device (aka OTA), tested on the TrimUI Brick (but might work on the Smart Pro as well). Wifi required (obviously).
