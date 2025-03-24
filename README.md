@@ -1,16 +1,12 @@
-# NextUI Updater PAK
+# NextUI OTA Updater PAK
 
-A PAK for updating NextUI on-device, tested on the TrimUI Brick (but might work on the Smart Pro as well). Wifi required (obviously).
-
-Mainly created as a learning experience for me, but despite its simplicity I think it might be useful for others.
+A PAK for updating NextUI on-device (aka OTA), tested on the TrimUI Brick (but might work on the Smart Pro as well). Wifi required (obviously).
 
 ## Installation
 
 Unzip the `nextui-updater-pak.zip` file to the root of your SD card (merge the contents).
 
 ## Controls
-
-The application supports both keyboard and game controller input:
 
 - **D-pad Up/Down**: Navigate between buttons
 - **Button A**: Select
