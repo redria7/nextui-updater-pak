@@ -17,7 +17,16 @@ cat > "$LAUNCH_SCRIPT" <<EOF
 #!/bin/sh
 
 cd \$(dirname "\$0")
+:> logs.txt
+
+while : ; do
+
 ./nextui-updater 2>&1 >> logs.txt
+
+[[ \$? -eq 5 ]] || break
+
+done
+
 EOF
 
 (cd "$DIST_DIR" && zip -r "../$ZIP_FILE" .)

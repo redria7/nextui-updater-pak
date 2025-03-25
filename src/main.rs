@@ -4,6 +4,7 @@ use egui_backend::{sdl2::event::Event, DpiScaling, ShaderVersion};
 use egui_sdl2_gl as egui_backend;
 use egui_sdl2_gl::egui::RichText;
 use serde::Deserialize;
+use std::process::exit;
 use std::{
     fs::File,
     io::{Cursor, Read, Write},
@@ -34,7 +35,6 @@ struct AppState {
 }
 
 // Constants
-const GITHUB_API_URL: &str = "https://api.github.com/repos/LoveRetro/NextUI/releases/latest";
 const USER_AGENT: &str = "NextUI Updater";
 const OUTPUT_PATH: &str = "/mnt/SDCARD/";
 const WINDOW_WIDTH: u32 = 1024;
@@ -44,26 +44,12 @@ const DPI_SCALE: f32 = 3.0;
 // Error type for the application
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-fn do_fetch(app_state: Arc<Mutex<AppState>>) {
-    thread::spawn(move || {
-        if let Err(err) = fetch_latest_release(app_state.clone()) {
-            let mut state = app_state.lock().unwrap();
-            state.current_operation = None;
-            state.error = Some(format!("Fetch failed: {}", err));
-        }
-    });
-}
-
-fn fetch_latest_release(app_state: Arc<Mutex<AppState>>) -> Result<()> {
-    // Fetch latest release information
-    {
-        let mut state = app_state.lock().unwrap();
-        state.current_operation = Some("Fetching latest release...".to_string());
-    }
-
+fn fetch_latest_release(repo: &str) -> Result<Release> {
     let client = reqwest::blocking::Client::new();
     let response = client
-        .get(GITHUB_API_URL)
+        .get(format!(
+            "https://api.github.com/repos/{repo}/releases/latest"
+        ))
         .header("User-Agent", USER_AGENT)
         .send()?;
 
@@ -71,15 +57,126 @@ fn fetch_latest_release(app_state: Arc<Mutex<AppState>>) -> Result<()> {
         return Err(format!("GitHub API request failed: {}", response.status()).into());
     }
 
-    let release: Release = response.json()?;
+    Ok(response.json()?)
+}
+
+fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
+    // Fetch latest release information
+    {
+        let mut state = app_state.lock().unwrap();
+        state.current_operation = Some("Fetching latest updater release...".to_string());
+    }
+
+    let release = fetch_latest_release("LanderN/nextui-updater-pak")?;
+
+    let available = semver::Version::parse(&release.tag_name)?;
+    let installed = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
+
+    if available > installed {
+        println!(
+            "New version available: {} (current: {})",
+            available, installed
+        );
+
+        let mut state = app_state.lock().unwrap();
+        state.current_operation = Some("Downloading updater...".to_string());
+        state.progress = Some(0.3);
+    } else {
+        println!("No updates available");
+
+        return Ok(());
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .timeout(None)
+        .build()?;
+
+    let response = client
+        .get(&release.assets[0].url)
+        .header("Accept", "application/octet-stream")
+        .header("User-Agent", USER_AGENT)
+        .send()?;
+
+    println!("Status: {}", response.status());
+    println!("Headers: {:?}", response.headers());
+
+    let bytes = response.bytes()?;
+    {
+        let mut state = app_state.lock().unwrap();
+        state.current_operation =
+            format!("Extracting NextUI Updater {}...", release.tag_name).into();
+        state.progress = Some(0.6);
+    }
+
+    // Move the current binary to a backup location
+    let current_binary = std::env::current_exe()?;
+    std::fs::rename(&current_binary, current_binary.with_extension("bak"))?;
+
+    // Extract the update package
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+    let result = archive.extract(OUTPUT_PATH);
+
+    if result.is_err() {
+        // Move the backup back
+        std::fs::rename(current_binary.with_extension("bak"), current_binary)?;
+
+        return Err("Failed to extract update package".into());
+    }
 
     {
         let mut state = app_state.lock().unwrap();
-        state.latest_release = Some(release.clone());
-        state.current_operation = None;
+        state.current_operation = Some("Self-update success! Restarting updater...".to_string());
+        state.progress = Some(1.0);
     }
 
-    Ok(())
+    // Give the user a moment to see the completion message
+    thread::sleep(std::time::Duration::from_secs(1));
+
+    // "5" is the exit code for "restart required"
+    exit(5);
+}
+
+fn do_init(app_state: Arc<Mutex<AppState>>) {
+    thread::spawn(move || {
+        // Do self-update
+        match self_update(app_state.clone()) {
+            Ok(()) => {
+                let mut state = app_state.lock().unwrap();
+                state.current_operation = None;
+                state.progress = None;
+            }
+            Err(err) => {
+                let mut state = app_state.lock().unwrap();
+                state.current_operation = None;
+                state.error = Some(format!("Self-update failed: {}", err));
+                state.progress = None;
+
+                // Give the user a moment to see the error message
+                thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+
+        // Fetch latest release information
+        {
+            let mut state = app_state.lock().unwrap();
+            state.current_operation = Some("Fetching latest NextUI release...".to_string());
+        }
+
+        match fetch_latest_release("LoveRetro/NextUI") {
+            Ok(release) => {
+                let mut state = app_state.lock().unwrap();
+                state.latest_release = Some(release.clone());
+                state.current_operation = None;
+            }
+            Err(err) => {
+                let mut state = app_state.lock().unwrap();
+                state.current_operation = None;
+                state.error = Some(format!("Fetch failed: {}", err));
+            }
+        }
+    });
 }
 
 fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
@@ -237,7 +334,11 @@ fn init_sdl() -> Result<(
 
     // Create a window
     let window = video_subsystem
-        .window("NextUI Updater", WINDOW_WIDTH, WINDOW_HEIGHT)
+        .window(
+            &format!("NextUI Updater {}", env!("CARGO_PKG_VERSION")),
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        )
         .position_centered()
         .opengl()
         .build()?;
@@ -269,8 +370,8 @@ fn main() -> Result<()> {
         error: None,
     }));
 
-    // Fetch latest release information
-    do_fetch(app_state.clone());
+    // Self-update + fetch latest release information
+    do_init(app_state.clone());
 
     let start_time: Instant = Instant::now();
     let mut quit = false;
@@ -282,7 +383,7 @@ fn main() -> Result<()> {
         // UI rendering
         egui::CentralPanel::default().show(&egui_ctx, |ui| {
             ui.vertical_centered_justified(|ui| {
-                ui.heading("NextUI Updater");
+                ui.heading(format!("NextUI Updater {}", env!("CARGO_PKG_VERSION")));
 
                 // Check application state
                 let state_lock = app_state.lock().unwrap();
