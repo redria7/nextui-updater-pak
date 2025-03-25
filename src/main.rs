@@ -16,7 +16,7 @@ use std::{
 #[derive(Deserialize, Clone, Debug)]
 struct Asset {
     name: String,
-    browser_download_url: String,
+    url: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -101,6 +101,12 @@ fn update_process(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
         state.latest_release.clone().ok_or("No release found")?
     };
 
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .timeout(None)
+        .build()?;
+
     for asset in release.assets.iter() {
         // Download the asset
         {
@@ -108,7 +114,18 @@ fn update_process(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
             state.current_operation = format!("Downloading {}...", asset.name).into();
             state.progress = Some(0.3);
         }
-        let response = reqwest::blocking::get(&asset.browser_download_url)?;
+
+        println!("Downloading from {}", asset.url);
+
+        let response = client
+            .get(&asset.url)
+            .header("Accept", "application/octet-stream")
+            .header("User-Agent", USER_AGENT)
+            .send()?;
+
+        println!("Status: {}", response.status());
+        println!("Headers: {:?}", response.headers());
+
         let bytes = response.bytes()?;
 
         {
