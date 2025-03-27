@@ -12,6 +12,7 @@ Unzip the `nextui-updater-pak.zip` file to the root of your SD card (merge the c
 
 - **D-pad Up/Down**: Navigate between buttons
 - **Button A**: Select
+- **Button B**: Exit
 
 ## Building for tg5040 using [cross-rs](https://github.com/cross-rs/cross)
 

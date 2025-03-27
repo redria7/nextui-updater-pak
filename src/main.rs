@@ -2,8 +2,9 @@ use egui::{Button, Color32, FullOutput, ProgressBar};
 use egui_backend::egui;
 use egui_backend::{sdl2::event::Event, DpiScaling, ShaderVersion};
 use egui_sdl2_gl as egui_backend;
-use egui_sdl2_gl::egui::RichText;
+use egui_sdl2_gl::egui::{CornerRadius, FontData, FontDefinitions, FontFamily, RichText};
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::process::exit;
 use std::{
     fs::File,
@@ -36,10 +37,12 @@ struct AppState {
 
 // Constants
 const USER_AGENT: &str = "NextUI Updater";
-const OUTPUT_PATH: &str = "/mnt/SDCARD/";
+const SDCARD_ROOT: &str = "/mnt/SDCARD/";
 const WINDOW_WIDTH: u32 = 1024;
 const WINDOW_HEIGHT: u32 = 768;
-const DPI_SCALE: f32 = 3.0;
+const DPI_SCALE: f32 = 3.75;
+
+const FONTS: [&str; 2] = ["BPreplayBold-unhinted.otf", "chillroundm.ttf"];
 
 // Error type for the application
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -116,7 +119,7 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
 
     // Extract the update package
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
-    let result = archive.extract(OUTPUT_PATH);
+    let result = archive.extract(SDCARD_ROOT);
 
     if result.is_err() {
         // Move the backup back
@@ -181,6 +184,10 @@ fn do_init(app_state: Arc<Mutex<AppState>>) {
 
 fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
     thread::spawn(move || {
+        if app_state.lock().unwrap().latest_release.is_none() {
+            do_init(app_state.clone());
+        }
+
         if let Err(err) = update_process(app_state.clone(), full) {
             let mut state = app_state.lock().unwrap();
             state.current_operation = None;
@@ -247,13 +254,13 @@ fn update_process(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
             }
 
             // Write the extracted file
-            let mut file = File::create([OUTPUT_PATH, "MinUI.zip"].join("/"))?;
+            let mut file = File::create([SDCARD_ROOT, "MinUI.zip"].join("/"))?;
             file.write_all(&minui_data)?;
 
             break; // Done!
         } else {
             // Full update, extract all files
-            archive.extract(OUTPUT_PATH)?;
+            archive.extract(SDCARD_ROOT)?;
         }
     }
 
@@ -295,12 +302,24 @@ fn controller_to_key(button: sdl2::controller::Button) -> Option<sdl2::keyboard:
 fn setup_ui_style() -> egui::Style {
     let mut style = egui::Style::default();
     style.visuals.panel_fill = Color32::from_rgb(0, 0, 0);
-    style.visuals.override_text_color = Some(Color32::from_rgb(255, 255, 255));
-    style.visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(30, 30, 30);
-    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(40, 40, 40);
-    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(70, 70, 70);
-    style.visuals.widgets.active.bg_fill = Color32::from_rgb(90, 90, 90);
-    style.visuals.widgets.noninteractive.fg_stroke.color = Color32::from_rgb(200, 200, 200);
+    style.visuals.selection.bg_fill = Color32::WHITE;
+    style.visuals.selection.stroke.color = Color32::BLACK;
+
+    style.visuals.widgets.inactive.fg_stroke.color = Color32::WHITE;
+    style.visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+
+    style.visuals.widgets.active.bg_fill = Color32::WHITE;
+    style.visuals.widgets.active.weak_bg_fill = Color32::WHITE;
+    style.visuals.widgets.active.fg_stroke.color = Color32::BLACK;
+    style.visuals.widgets.active.corner_radius = CornerRadius::same(255);
+
+    style.visuals.widgets.noninteractive.fg_stroke.color = Color32::WHITE;
+    style.visuals.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
+
+    style.visuals.widgets.hovered.bg_fill = Color32::WHITE;
+    style.visuals.widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
+    style.visuals.widgets.hovered.corner_radius = CornerRadius::same(255);
+
     style
 }
 
@@ -362,6 +381,59 @@ fn main() -> Result<()> {
     let egui_ctx = egui::Context::default();
     egui_ctx.set_style(setup_ui_style());
 
+    // Font stuff
+
+    // Load font from file
+    fn load_font() -> Result<FontDefinitions> {
+        fn get_font_preference() -> Result<usize> {
+            // Load NextUI settings
+            let mut settings_file =
+                std::fs::File::open(SDCARD_ROOT.to_owned() + ".userdata/shared/minuisettings.txt")?;
+
+            let mut settings = String::new();
+            settings_file.read_to_string(&mut settings)?;
+
+            println!("Settings: {}", settings);
+
+            // Very crappy parser
+            Ok(if settings.contains("font=1") { 1 } else { 0 })
+        }
+
+        // Now load the font
+        let mut path = PathBuf::from(SDCARD_ROOT);
+        path.push(format!(
+            ".system/res/{}",
+            FONTS[get_font_preference().unwrap_or(0)]
+        ));
+        println!("Loading font: {}", path.display());
+        let mut font_data = vec![];
+        std::fs::File::open(path)?.read_to_end(&mut font_data)?;
+
+        let mut fonts = FontDefinitions::default();
+        fonts.font_data.insert(
+            "custom_font".to_owned(),
+            std::sync::Arc::new(FontData::from_owned(font_data)),
+        );
+        fonts
+            .families
+            .get_mut(&FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "custom_font".to_owned());
+
+        Ok(fonts)
+    }
+
+    if let Ok(fonts) = load_font() {
+        egui_ctx.set_fonts(fonts);
+    }
+
+    match load_font() {
+        Ok(fonts) => egui_ctx.set_fonts(fonts),
+        Err(e) => {
+            println!("Failed to load font: {:?}", e);
+        }
+    }
+
     // Initialize application state
     let app_state = Arc::new(Mutex::new(AppState {
         latest_release: None,
@@ -374,7 +446,6 @@ fn main() -> Result<()> {
     do_init(app_state.clone());
 
     let start_time: Instant = Instant::now();
-    let mut quit = false;
 
     'running: loop {
         egui_state.input.time = Some(start_time.elapsed().as_secs_f64());
@@ -382,78 +453,26 @@ fn main() -> Result<()> {
 
         // UI rendering
         egui::CentralPanel::default().show(&egui_ctx, |ui| {
-            ui.vertical_centered_justified(|ui| {
-                ui.heading(format!("NextUI Updater {}", env!("CARGO_PKG_VERSION")));
-
+            ui.vertical_centered(|ui| {
                 // Check application state
                 let state_lock = app_state.lock().unwrap();
                 let update_in_progress = state_lock.current_operation.is_some();
                 drop(state_lock);
 
-                // Quit button
-                ui.add_space(8.0);
-                if ui.button("Quit").clicked() {
-                    quit = true;
-                }
-                ui.add_space(8.0);
-                ui.separator();
+                ui.label(
+                    RichText::new(format!("NextUI Updater {}", env!("CARGO_PKG_VERSION")))
+                        .color(Color32::from_rgb(150, 150, 150))
+                        .size(8.0),
+                );
                 ui.add_space(8.0);
 
-                // Show release information if available
-                if let Some(release) = &app_state.lock().unwrap().latest_release {
-                    ui.label(format!("Latest version: {}", release.tag_name));
-                    ui.add_space(8.0);
-                }
-
-                // Update buttons
                 let quick_update_button =
                     ui.add_enabled(!update_in_progress, Button::new("Quick Update"));
-                ui.label(
-                    RichText::new("MinUI.zip only")
-                        .font(egui::FontId::proportional(8.0))
-                        .color(Color32::from_rgb(150, 150, 150)),
-                );
-
-                ui.add_space(8.0);
-
-                let full_update_button =
-                    ui.add_enabled(!update_in_progress, Button::new("Full Update"));
-                ui.label(
-                    RichText::new("Extract full zip files (base + extras)")
-                        .font(egui::FontId::proportional(8.0))
-                        .color(Color32::from_rgb(150, 150, 150)),
-                );
-
-                ui.add_space(8.0);
-
-                // Display current operation
-                if let Some(operation) = &app_state.lock().unwrap().current_operation {
-                    ui.label(operation);
-                }
-
-                // Display error if any
-                if let Some(error) = &app_state.lock().unwrap().error {
-                    ui.add_space(8.0);
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), error);
-                }
-
-                // Show progress bar if available
-                if let Some(progress) = app_state.lock().unwrap().progress {
-                    ui.add_space(8.0);
-                    ui.add(ProgressBar::new(progress).show_percentage().animate(true));
-                }
-
                 // Initiate update if button clicked
                 if quick_update_button.clicked() {
                     // Clear any previous errors
                     app_state.lock().unwrap().error = None;
                     do_update(app_state.clone(), false);
-                }
-
-                if full_update_button.clicked() {
-                    // Clear any previous errors
-                    app_state.lock().unwrap().error = None;
-                    do_update(app_state.clone(), true);
                 }
 
                 // Focus the update button for controller navigation
@@ -462,6 +481,51 @@ fn main() -> Result<()> {
                         r.request_focus(quick_update_button.id);
                     }
                 });
+                ui.label(
+                    RichText::new("MinUI.zip only")
+                        .size(8.0)
+                        .color(Color32::from_rgb(150, 150, 150)),
+                );
+
+                ui.add_space(4.0);
+
+                let full_update_button =
+                    ui.add_enabled(!update_in_progress, Button::new("Full Update"));
+
+                ui.label(
+                    RichText::new("Extract full zip files (base + extras)")
+                        .size(8.0)
+                        .color(Color32::from_rgb(150, 150, 150)),
+                );
+                if full_update_button.clicked() {
+                    // Clear any previous errors
+                    app_state.lock().unwrap().error = None;
+                    do_update(app_state.clone(), true);
+                }
+
+                ui.add_space(8.0);
+
+                // Show release information if available
+                if let Some(release) = &app_state.lock().unwrap().latest_release {
+                    let version = format!("Latest version: NextUI {}", release.tag_name);
+                    ui.label(version);
+                    ui.add_space(8.0);
+                }
+
+                // Display current operation
+                if let Some(operation) = &app_state.lock().unwrap().current_operation {
+                    ui.label(RichText::new(operation).color(Color32::from_rgb(150, 150, 150)));
+                }
+
+                // Display error if any
+                if let Some(error) = &app_state.lock().unwrap().error {
+                    ui.colored_label(Color32::from_rgb(255, 150, 150), RichText::new(error));
+                }
+
+                // Show progress bar if available
+                if let Some(progress) = app_state.lock().unwrap().progress {
+                    ui.add(ProgressBar::new(progress).show_percentage());
+                }
             });
         });
 
@@ -504,6 +568,11 @@ fn main() -> Result<()> {
                 Event::ControllerButtonUp {
                     timestamp, button, ..
                 } => {
+                    if button == sdl2::controller::Button::A {
+                        // Exit with "B" button
+                        break 'running;
+                    }
+
                     if let Some(keycode) = controller_to_key(button) {
                         let key_event = Event::KeyUp {
                             keycode: Some(keycode),
@@ -513,6 +582,7 @@ fn main() -> Result<()> {
                             keymod: sdl2::keyboard::Mod::empty(),
                             repeat: false,
                         };
+
                         egui_state.process_input(&window, key_event, &mut painter);
                     }
                 }
@@ -521,10 +591,6 @@ fn main() -> Result<()> {
                     egui_state.process_input(&window, event, &mut painter);
                 }
             }
-        }
-
-        if quit {
-            break;
         }
     }
 
