@@ -409,6 +409,8 @@ fn controller_to_key(button: sdl2::controller::Button) -> Option<sdl2::keyboard:
 
 fn setup_ui_style() -> egui::Style {
     let mut style = egui::Style::default();
+    style.spacing.button_padding = Vec2::new(8.0, 2.0);
+
     style.visuals.panel_fill = Color32::from_rgb(0, 0, 0);
     style.visuals.selection.bg_fill = Color32::WHITE;
     style.visuals.selection.stroke.color = Color32::BLACK;
