@@ -41,13 +41,16 @@ enum Progress {
 }
 
 struct AppState {
-    latest_release: Option<Release>,
+    submenu: Submenu,
+    nextui_release: Option<Release>,
+    pakman_release: Option<Release>,
     current_operation: Option<String>,
     progress: Option<Progress>,
     error: Option<String>,
     hint: Option<String>,
 }
 
+#[derive(Clone, Copy)]
 enum Submenu {
     None,
     NextUI,
@@ -82,11 +85,53 @@ fn fetch_latest_release(repo: &str) -> Result<Release> {
     Ok(response.json()?)
 }
 
-fn extract_pak(bytes: Bytes) -> Result<()> {
+fn extract_zip(bytes: Bytes, do_root_dir: bool, progress_cb: impl Fn(f32)) -> Result<()> {
     // Extract the update package
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
 
-    archive.extract_unwrapped_root_dir(SDCARD_ROOT, root_dir_common_filter)?;
+    // Create a temporary directory to extract the files
+    let temp_dir = tempfile::tempdir_in(SDCARD_ROOT)?;
+    if do_root_dir {
+        archive.extract_unwrapped_root_dir(&temp_dir, root_dir_common_filter)
+    } else {
+        archive.extract(&temp_dir)
+    }?;
+
+    let amount_of_files = archive.len();
+    let files_copied: Arc<Mutex<usize>> = Arc::new(Mutex::new(1));
+
+    let file_copied_cb = Arc::new(|| {
+        *files_copied.lock().unwrap() += 1;
+        progress_cb(*files_copied.lock().unwrap() as f32 / amount_of_files as f32);
+    });
+
+    // Copy the files to the correct location
+    use std::path::Path;
+    use std::{fs, io};
+    fn copy_dir_all(
+        src: impl AsRef<Path>,
+        dst: impl AsRef<Path>,
+        file_copied_cb: Arc<impl Fn()>,
+    ) -> io::Result<()> {
+        fs::create_dir_all(&dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            if ty.is_dir() {
+                copy_dir_all(
+                    entry.path(),
+                    dst.as_ref().join(entry.file_name()),
+                    file_copied_cb.clone(),
+                )?;
+                file_copied_cb();
+            } else {
+                fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+                file_copied_cb();
+            }
+        }
+        Ok(())
+    }
+    copy_dir_all(temp_dir.path(), SDCARD_ROOT, file_copied_cb)?;
 
     Ok(())
 }
@@ -176,8 +221,10 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     std::fs::rename(&current_binary, current_binary.with_extension("bak"))?;
 
     // Extract the update package
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
-    let result = archive.extract(SDCARD_ROOT);
+    let result = extract_zip(bytes, false, |pr| {
+        let mut state = app_state.lock().unwrap();
+        state.progress = Some(Progress::Determinate(pr));
+    });
 
     if result.is_err() {
         // Move the backup back
@@ -210,7 +257,33 @@ fn do_nextui_release_check(app_state: Arc<Mutex<AppState>>) {
         match fetch_latest_release("LoveRetro/NextUI") {
             Ok(release) => {
                 let mut state = app_state.lock().unwrap();
-                state.latest_release = Some(release.clone());
+                state.nextui_release = Some(release.clone());
+                state.current_operation = None;
+                state.progress = None;
+            }
+            Err(err) => {
+                let mut state = app_state.lock().unwrap();
+                state.current_operation = None;
+                state.error = Some(format!("Fetch failed: {}", err));
+                state.progress = None;
+            }
+        }
+    });
+}
+
+fn do_pakman_release_check(app_state: Arc<Mutex<AppState>>) {
+    thread::spawn(move || {
+        // Fetch latest release information
+        {
+            let mut state = app_state.lock().unwrap();
+            state.current_operation = Some("Fetching latest Pakman release...".to_string());
+            state.progress = Some(Progress::Indeterminate);
+        }
+
+        match fetch_latest_release("josegonzalez/pakman") {
+            Ok(release) => {
+                let mut state = app_state.lock().unwrap();
+                state.pakman_release = Some(release.clone());
                 state.current_operation = None;
                 state.progress = None;
             }
@@ -248,7 +321,7 @@ fn do_init(app_state: Arc<Mutex<AppState>>) {
 
 fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
     thread::spawn(move || {
-        if app_state.lock().unwrap().latest_release.is_none() {
+        if app_state.lock().unwrap().nextui_release.is_none() {
             do_init(app_state.clone());
         }
 
@@ -267,7 +340,7 @@ fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
 fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
     let release = {
         let mut state = app_state.lock().unwrap();
-        let release = state.latest_release.clone().ok_or("No release found")?;
+        let release = state.nextui_release.clone().ok_or("No release found")?;
 
         state.current_operation = Some("Downloading update...".to_string());
         state.progress = Some(Progress::Indeterminate);
@@ -303,14 +376,14 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
 
     {
         let mut state = app_state.lock().unwrap();
-        state.current_operation = format!("Extracting {}...", asset.name).into();
+        state.current_operation = format!("Extracting {}...\nPlease wait...", asset.name).into();
         state.progress = Some(Progress::Indeterminate);
     }
 
     // Extract the update package
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
 
     if !full {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
         // "Quick" update, just extract MinUI.zip
 
         // Look for MinUI.zip in the archive
@@ -327,7 +400,10 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
         file.write_all(&minui_data)?;
     } else {
         // Full update, extract all files
-        archive.extract(SDCARD_ROOT)?;
+        extract_zip(bytes, false, |pr| {
+            let mut state = app_state.lock().unwrap();
+            state.progress = Some(Progress::Determinate(pr));
+        })?;
     }
 
     {
@@ -362,7 +438,10 @@ fn do_pakman_update(app_state: Arc<Mutex<AppState>>) {
 }
 
 fn update_pakman(app_state: Arc<Mutex<AppState>>) -> Result<()> {
-    let release = fetch_latest_release("josegonzalez/pakman")?;
+    let release = {
+        let state = app_state.lock().unwrap();
+        state.pakman_release.clone().ok_or("No release found")?
+    };
 
     let client = reqwest::blocking::Client::new();
 
@@ -386,11 +465,18 @@ fn update_pakman(app_state: Arc<Mutex<AppState>>) -> Result<()> {
 
     {
         let mut state = app_state.lock().unwrap();
-        state.current_operation = format!("Extracting Pakman {}...", release.tag_name).into();
+        state.current_operation = format!(
+            "Extracting Pakman {}...\nPlease be patient, this may take a while...",
+            release.tag_name
+        )
+        .into();
         state.progress = Some(Progress::Indeterminate);
     }
 
-    extract_pak(bytes)?;
+    extract_zip(bytes, true, |pr| {
+        let mut state = app_state.lock().unwrap();
+        state.progress = Some(Progress::Determinate(pr));
+    })?;
 
     {
         let mut state = app_state.lock().unwrap();
@@ -428,7 +514,7 @@ fn setup_ui_style() -> egui::Style {
 
     style.visuals.panel_fill = Color32::from_rgb(0, 0, 0);
     style.visuals.selection.bg_fill = Color32::WHITE;
-    style.visuals.selection.stroke.color = Color32::BLACK;
+    style.visuals.selection.stroke.color = Color32::GRAY;
 
     style.visuals.widgets.inactive.fg_stroke.color = Color32::WHITE;
     style.visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
@@ -493,7 +579,7 @@ fn init_sdl() -> Result<(
 }
 
 fn nextui_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Response {
-    let latest_release = app_state.lock().unwrap().latest_release.clone();
+    let latest_release = app_state.lock().unwrap().nextui_release.clone();
 
     // Show release information if available
     if let Some(release) = latest_release {
@@ -535,11 +621,29 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Respo
 }
 
 fn pakman_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Response {
+    let latest_release = app_state.lock().unwrap().pakman_release.clone();
+
+    // Show release information if available
+    if let Some(release) = latest_release {
+        let version = format!("Latest version: Pakman {}", release.tag_name);
+        ui.label(RichText::new(version).size(10.0));
+    }
+
+    ui.add_space(8.0);
+
     let button = ui.button("Update Pakman");
     if button.clicked() {
         // Clear any previous errors
         app_state.lock().unwrap().error = None;
         do_pakman_update(app_state.clone());
+    }
+
+    // HINTS
+    if button.has_focus() {
+        app_state.lock().unwrap().hint =
+            Some("Update pakman by josegonzalez (aka savant)".to_string());
+    } else {
+        app_state.lock().unwrap().hint = None;
     }
 
     button
@@ -611,20 +715,26 @@ fn main() -> Result<()> {
 
     // Initialize application state
     let app_state = Arc::new(Mutex::new(AppState {
-        latest_release: None,
+        submenu: Submenu::None,
+        nextui_release: None,
+        pakman_release: None,
         current_operation: None,
         progress: None,
         error: None,
         hint: None,
     }));
 
+    let enter_submenu = |s: Submenu| {
+        let mut state = app_state.lock().unwrap();
+        state.submenu = s;
+        state.hint = None;
+    };
+
     // Self-update + fetch latest release information
     do_init(app_state.clone());
-    do_nextui_release_check(app_state.clone());
 
     let start_time: Instant = Instant::now();
 
-    let mut submenu: Submenu = Submenu::NextUI;
     let mut quit = false;
 
     'running: loop {
@@ -651,19 +761,33 @@ fn main() -> Result<()> {
                 ui.add_space(4.0);
 
                 ui.add_enabled_ui(!update_in_progress, |ui| {
+                    let submenu =  { app_state.lock().unwrap().submenu };
                     let menu = match submenu {
                         Submenu::None => {
                             let nextui_button = ui.button("NextUI");
                             if nextui_button.clicked() {
                                 do_nextui_release_check(app_state.clone());
-                                submenu = Submenu::NextUI;
+                                enter_submenu(Submenu::NextUI);
                             }
-                            if ui.button("Pakman").clicked() {
-                                submenu = Submenu::Pakman;
+                            let pakman_button = ui.button("Pakman");
+                            if pakman_button.clicked() {
+                                do_pakman_release_check(app_state.clone());
+                                enter_submenu(Submenu::Pakman);
                             }
                             ui.add_space(4.0);
                             if ui.button("Quit").clicked() {
                                 quit = true;
+                            }
+
+                            // HINTS
+                            if nextui_button.has_focus() {
+                                app_state.lock().unwrap().hint =
+                                    Some("Update NextUI".to_string());
+                            } else if pakman_button.has_focus() {
+                                app_state.lock().unwrap().hint =
+                                    Some("Update pakman by josegonzalez (aka savant)".to_string());
+                            } else {
+                                app_state.lock().unwrap().hint = None;
                             }
 
                             nextui_button
@@ -696,6 +820,7 @@ fn main() -> Result<()> {
                 if let Some(progress) = &app_state.lock().unwrap().progress {
                     match progress {
                         Progress::Indeterminate => {
+                            ui.add_space(4.0);
                             ui.add(Spinner::new().color(Color32::WHITE));
                         }
                         Progress::Determinate(pr) => {
@@ -757,6 +882,21 @@ fn main() -> Result<()> {
         painter.paint_jobs(None, textures_delta, paint_jobs);
         window.gl_swap_window();
 
+        let mut handle_back_button = || {
+            let submenu = { app_state.lock().unwrap().submenu };
+            match submenu {
+                Submenu::None => {
+                    quit = true;
+                }
+                Submenu::NextUI => {
+                    enter_submenu(Submenu::None);
+                }
+                Submenu::Pakman => {
+                    enter_submenu(Submenu::None);
+                }
+            }
+        };
+
         // Process events
         if let Some(event) = event_pump.wait_event_timeout(5) {
             match event {
@@ -781,7 +921,7 @@ fn main() -> Result<()> {
                 } => {
                     if button == sdl2::controller::Button::A {
                         // Exit with "B" button
-                        break 'running;
+                        handle_back_button();
                     }
 
                     if let Some(keycode) = controller_to_key(button) {
@@ -796,6 +936,13 @@ fn main() -> Result<()> {
 
                         egui_state.process_input(&window, key_event, &mut painter);
                     }
+                }
+                // for easy testing on desktop
+                Event::KeyDown {
+                    keycode: Some(sdl2::keyboard::Keycode::Escape),
+                    ..
+                } => {
+                    handle_back_button();
                 }
                 _ => {
                     // Process other input events
