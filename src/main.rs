@@ -6,6 +6,7 @@ use egui_sdl2_gl as egui_backend;
 use egui_sdl2_gl::egui::{
     CornerRadius, FontData, FontDefinitions, FontFamily, Pos2, Rect, RichText, Vec2,
 };
+use reqwest::blocking::{RequestBuilder, Response};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -42,7 +43,7 @@ struct AppState {
 }
 
 enum Submenu {
-    // None,
+    None,
     NextUI,
     Pakman,
 }
@@ -84,6 +85,36 @@ fn extract_pak(bytes: Bytes) -> Result<()> {
     Ok(())
 }
 
+fn download(request: RequestBuilder, progress_cb: impl Fn(f32)) -> Result<Bytes> {
+    let mut response = request.send()?;
+    let total_size = response.content_length().unwrap_or(0);
+
+    let mut bytes = Vec::new();
+    let mut downloaded: u64 = 0;
+    let mut buffer = [0; 8192];
+
+    loop {
+        let bytes_read = response.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        bytes.write_all(&buffer[..bytes_read])?;
+        downloaded += bytes_read as u64;
+
+        // Show progress
+        if total_size > 0 {
+            let percentage = downloaded as f64 / total_size as f64 * 100.0;
+            progress_cb(percentage as f32);
+        }
+    }
+
+    println!("\nDownload complete!");
+    println!("Status: {}", response.status());
+    println!("Headers: {:?}", response.headers());
+
+    Ok(bytes.into())
+}
+
 fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     // Fetch latest release information
     {
@@ -104,7 +135,6 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
 
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some("Downloading updater...".to_string());
-        state.progress = Some(0.3);
     } else {
         println!("No updates available");
 
@@ -117,21 +147,21 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
         .timeout(None)
         .build()?;
 
-    let response = client
+    let request_builder = client
         .get(&release.assets[0].url)
         .header("Accept", "application/octet-stream")
-        .header("User-Agent", USER_AGENT)
-        .send()?;
+        .header("User-Agent", USER_AGENT);
 
-    println!("Status: {}", response.status());
-    println!("Headers: {:?}", response.headers());
+    let bytes = download(request_builder, |pr| {
+        let mut state = app_state.lock().unwrap();
+        state.progress = Some(pr);
+    })?;
 
-    let bytes = response.bytes()?;
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation =
             format!("Extracting NextUI Updater {}...", release.tag_name).into();
-        state.progress = Some(0.6);
+        state.progress = None;
     }
 
     // Move the current binary to a backup location
@@ -152,7 +182,6 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some("Self-update success! Restarting updater...".to_string());
-        state.progress = Some(1.0);
     }
 
     // Give the user a moment to see the completion message
@@ -230,7 +259,6 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
         let release = state.latest_release.clone().ok_or("No release found")?;
 
         state.current_operation = Some("Downloading update...".to_string());
-        state.progress = Some(0.3);
 
         release
     };
@@ -241,63 +269,57 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
         .timeout(None)
         .build()?;
 
-    for asset in release.assets.iter() {
-        // Download the asset
-        {
-            let mut state = app_state.lock().unwrap();
-            state.current_operation = format!("Downloading {}...", asset.name).into();
-            state.progress = Some(0.3);
-        }
+    let asset = release.assets.first().ok_or("No assets found")?;
+    // Download the asset
+    {
+        let mut state = app_state.lock().unwrap();
+        state.current_operation = format!("Downloading {}...", asset.name).into();
+    }
 
-        println!("Downloading from {}", asset.url);
+    println!("Downloading from {}", asset.url);
 
-        let response = client
-            .get(&asset.url)
-            .header("Accept", "application/octet-stream")
-            .header("User-Agent", USER_AGENT)
-            .send()?;
+    let request_builder = client
+        .get(&asset.url)
+        .header("Accept", "application/octet-stream")
+        .header("User-Agent", USER_AGENT);
 
-        println!("Status: {}", response.status());
-        println!("Headers: {:?}", response.headers());
+    let bytes = download(request_builder, |pr| {
+        let mut state = app_state.lock().unwrap();
+        state.progress = Some(pr);
+    })?;
 
-        let bytes = response.bytes()?;
+    {
+        let mut state = app_state.lock().unwrap();
+        state.current_operation = format!("Extracting {}...", asset.name).into();
+        state.progress = None;
+    }
 
-        {
-            let mut state = app_state.lock().unwrap();
-            state.current_operation = format!("Extracting {}...", asset.name).into();
-            state.progress = Some(0.6);
-        }
+    // Extract the update package
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
 
-        // Extract the update package
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+    if !full {
+        // "Quick" update, just extract MinUI.zip
 
-        if !full {
-            // "Quick" update, just extract MinUI.zip
-
-            // Look for MinUI.zip in the archive
-            let mut minui_data = Vec::new();
-            match archive.by_name("MinUI.zip") {
-                Ok(mut file) => {
-                    file.read_to_end(&mut minui_data)?;
-                }
-                Err(_) => return Err("File MinUI.zip not found in archive".into()),
+        // Look for MinUI.zip in the archive
+        let mut minui_data = Vec::new();
+        match archive.by_name("MinUI.zip") {
+            Ok(mut file) => {
+                file.read_to_end(&mut minui_data)?;
             }
-
-            // Write the extracted file
-            let mut file = File::create([SDCARD_ROOT, "MinUI.zip"].join("/"))?;
-            file.write_all(&minui_data)?;
-
-            break; // Done!
-        } else {
-            // Full update, extract all files
-            archive.extract(SDCARD_ROOT)?;
+            Err(_) => return Err("File MinUI.zip not found in archive".into()),
         }
+
+        // Write the extracted file
+        let mut file = File::create([SDCARD_ROOT, "MinUI.zip"].join("/"))?;
+        file.write_all(&minui_data)?;
+    } else {
+        // Full update, extract all files
+        archive.extract(SDCARD_ROOT)?;
     }
 
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some("Update complete, preparing to reboot...".to_string());
-        state.progress = Some(0.9);
     }
 
     // Give the user a moment to see the completion message
@@ -306,7 +328,6 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some("Rebooting system...".to_string());
-        state.progress = Some(1.0);
     }
 
     // Reboot the system
@@ -334,26 +355,24 @@ fn update_pakman(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some(format!("Downloading Pakman {}...", release.tag_name));
-        state.progress = Some(0.3);
     }
 
     println!("Downloading from {}", release.assets[0].url);
 
-    let response = client
+    let request_builder = client
         .get(&release.assets[0].url)
         .header("Accept", "application/octet-stream")
-        .header("User-Agent", USER_AGENT)
-        .send()?;
+        .header("User-Agent", USER_AGENT);
 
-    println!("Status: {}", response.status());
-    println!("Headers: {:?}", response.headers());
-
-    let bytes = response.bytes()?;
+    let bytes = download(request_builder, |pr| {
+        let mut state = app_state.lock().unwrap();
+        state.progress = Some(pr);
+    })?;
 
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = format!("Extracting Pakman {}...", release.tag_name).into();
-        state.progress = Some(0.6);
+        state.progress = None;
     }
 
     extract_pak(bytes)?;
@@ -361,7 +380,6 @@ fn update_pakman(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some("Pakman update success!".to_string());
-        state.progress = Some(1.0);
     }
 
     // wait a bit
