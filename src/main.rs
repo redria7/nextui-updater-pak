@@ -1,9 +1,13 @@
+use bytes::Bytes;
 use egui::{Button, Color32, FullOutput, ProgressBar};
 use egui_backend::egui;
 use egui_backend::{sdl2::event::Event, DpiScaling, ShaderVersion};
 use egui_sdl2_gl as egui_backend;
-use egui_sdl2_gl::egui::{CornerRadius, FontData, FontDefinitions, FontFamily, RichText};
+use egui_sdl2_gl::egui::{
+    CornerRadius, FontData, FontDefinitions, FontFamily, Pos2, Rect, RichText, Vec2,
+};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::exit;
 use std::{
@@ -13,6 +17,7 @@ use std::{
     thread,
     time::Instant,
 };
+use zip::read::root_dir_common_filter;
 
 // Define GitHub API response structures
 #[derive(Deserialize, Clone, Debug)]
@@ -33,6 +38,13 @@ struct AppState {
     current_operation: Option<String>,
     progress: Option<f32>,
     error: Option<String>,
+    hint: Option<String>,
+}
+
+enum Submenu {
+    // None,
+    NextUI,
+    Pakman,
 }
 
 // Constants
@@ -61,6 +73,15 @@ fn fetch_latest_release(repo: &str) -> Result<Release> {
     }
 
     Ok(response.json()?)
+}
+
+fn extract_pak(bytes: Bytes) -> Result<()> {
+    // Extract the update package
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+
+    archive.extract_unwrapped_root_dir(SDCARD_ROOT, root_dir_common_filter)?;
+
+    Ok(())
 }
 
 fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
@@ -141,26 +162,8 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     exit(5);
 }
 
-fn do_init(app_state: Arc<Mutex<AppState>>) {
+fn do_nextui_release_check(app_state: Arc<Mutex<AppState>>) {
     thread::spawn(move || {
-        // Do self-update
-        match self_update(app_state.clone()) {
-            Ok(()) => {
-                let mut state = app_state.lock().unwrap();
-                state.current_operation = None;
-                state.progress = None;
-            }
-            Err(err) => {
-                let mut state = app_state.lock().unwrap();
-                state.current_operation = None;
-                state.error = Some(format!("Self-update failed: {}", err));
-                state.progress = None;
-
-                // Give the user a moment to see the error message
-                thread::sleep(std::time::Duration::from_secs(1));
-            }
-        }
-
         // Fetch latest release information
         {
             let mut state = app_state.lock().unwrap();
@@ -182,27 +185,54 @@ fn do_init(app_state: Arc<Mutex<AppState>>) {
     });
 }
 
+fn do_init(app_state: Arc<Mutex<AppState>>) {
+    thread::spawn(move || {
+        // Do self-update
+        match self_update(app_state.clone()) {
+            Ok(()) => {
+                let mut state = app_state.lock().unwrap();
+                state.current_operation = None;
+                state.progress = None;
+            }
+            Err(err) => {
+                let mut state = app_state.lock().unwrap();
+                state.current_operation = None;
+                state.error = Some(format!("Self-update failed: {}", err));
+                state.progress = None;
+
+                // Give the user a moment to see the error message
+                thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    });
+}
+
 fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
     thread::spawn(move || {
         if app_state.lock().unwrap().latest_release.is_none() {
             do_init(app_state.clone());
         }
 
-        if let Err(err) = update_process(app_state.clone(), full) {
+        if let Err(err) = update_nextui(app_state.clone(), full) {
             let mut state = app_state.lock().unwrap();
             state.current_operation = None;
             state.error = Some(format!("Update failed: {}", err));
+
+            // Try to fetch latest release information again
+            do_nextui_release_check(app_state.clone());
         }
     });
 }
 
-fn update_process(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
+fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
     let release = {
         let mut state = app_state.lock().unwrap();
+        let release = state.latest_release.clone().ok_or("No release found")?;
+
         state.current_operation = Some("Downloading update...".to_string());
         state.progress = Some(0.3);
 
-        state.latest_release.clone().ok_or("No release found")?
+        release
     };
 
     let client = reqwest::blocking::Client::builder()
@@ -286,6 +316,66 @@ fn update_process(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
     }
 }
 
+fn do_pakman_update(app_state: Arc<Mutex<AppState>>) {
+    thread::spawn(move || {
+        if let Err(err) = update_pakman(app_state.clone()) {
+            let mut state = app_state.lock().unwrap();
+            state.current_operation = None;
+            state.error = Some(format!("Update failed: {}", err));
+        }
+    });
+}
+
+fn update_pakman(app_state: Arc<Mutex<AppState>>) -> Result<()> {
+    let release = fetch_latest_release("josegonzalez/pakman")?;
+
+    let client = reqwest::blocking::Client::new();
+
+    {
+        let mut state = app_state.lock().unwrap();
+        state.current_operation = Some(format!("Downloading Pakman {}...", release.tag_name));
+        state.progress = Some(0.3);
+    }
+
+    println!("Downloading from {}", release.assets[0].url);
+
+    let response = client
+        .get(&release.assets[0].url)
+        .header("Accept", "application/octet-stream")
+        .header("User-Agent", USER_AGENT)
+        .send()?;
+
+    println!("Status: {}", response.status());
+    println!("Headers: {:?}", response.headers());
+
+    let bytes = response.bytes()?;
+
+    {
+        let mut state = app_state.lock().unwrap();
+        state.current_operation = format!("Extracting Pakman {}...", release.tag_name).into();
+        state.progress = Some(0.6);
+    }
+
+    extract_pak(bytes)?;
+
+    {
+        let mut state = app_state.lock().unwrap();
+        state.current_operation = Some("Pakman update success!".to_string());
+        state.progress = Some(1.0);
+    }
+
+    // wait a bit
+    thread::sleep(std::time::Duration::from_secs(4));
+
+    {
+        let mut state = app_state.lock().unwrap();
+        state.current_operation = None;
+        state.progress = None;
+    }
+
+    Ok(())
+}
+
 // Map controller buttons to keyboard keys
 fn controller_to_key(button: sdl2::controller::Button) -> Option<sdl2::keyboard::Keycode> {
     match button {
@@ -367,6 +457,59 @@ fn init_sdl() -> Result<(
     Ok((sdl_context, window, event_pump, controller))
 }
 
+fn nextui_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Response {
+    let latest_release = app_state.lock().unwrap().latest_release.clone();
+
+    let quick_update_button = ui.add(Button::new("Quick Update"));
+
+    // Initiate update if button clicked
+    if quick_update_button.clicked() {
+        // Clear any previous errors
+        app_state.lock().unwrap().error = None;
+        do_update(app_state.clone(), false);
+    }
+
+    ui.add_space(4.0);
+
+    let full_update_button = ui.add(Button::new("Full Update"));
+
+    if full_update_button.clicked() {
+        // Clear any previous errors
+        app_state.lock().unwrap().error = None;
+        do_update(app_state.clone(), true);
+    }
+
+    ui.add_space(4.0);
+
+    // Show release information if available
+    if let Some(release) = latest_release {
+        let version = format!("Latest version: NextUI {}", release.tag_name);
+        ui.label(RichText::new(version).size(8.0));
+    }
+
+    // HINTS
+    if quick_update_button.has_focus() {
+        app_state.lock().unwrap().hint = Some("Update MinUI.zip only".to_string());
+    } else if full_update_button.has_focus() {
+        app_state.lock().unwrap().hint = Some("Extract full zip files (base + extras)".to_string());
+    } else {
+        app_state.lock().unwrap().hint = None;
+    }
+
+    quick_update_button
+}
+
+fn pakman_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Response {
+    let button = ui.button("Update Pakman");
+    if button.clicked() {
+        // Clear any previous errors
+        app_state.lock().unwrap().error = None;
+        do_pakman_update(app_state.clone());
+    }
+
+    button
+}
+
 fn main() -> Result<()> {
     // Initialize SDL and create window
     let (_sdl_context, window, mut event_pump, _controller) = init_sdl()?;
@@ -406,32 +549,29 @@ fn main() -> Result<()> {
             FONTS[get_font_preference().unwrap_or(0)]
         ));
         println!("Loading font: {}", path.display());
-        let mut font_data = vec![];
-        std::fs::File::open(path)?.read_to_end(&mut font_data)?;
+        let mut font_bytes = vec![];
+        std::fs::File::open(path)?.read_to_end(&mut font_bytes)?;
 
-        let mut fonts = FontDefinitions::default();
-        fonts.font_data.insert(
+        let mut font_data: BTreeMap<String, Arc<FontData>> = BTreeMap::new();
+
+        let mut families = BTreeMap::new();
+
+        font_data.insert(
             "custom_font".to_owned(),
-            std::sync::Arc::new(FontData::from_owned(font_data)),
+            std::sync::Arc::new(FontData::from_owned(font_bytes)),
         );
-        fonts
-            .families
-            .get_mut(&FontFamily::Proportional)
-            .unwrap()
-            .insert(0, "custom_font".to_owned());
 
-        Ok(fonts)
+        families.insert(FontFamily::Proportional, vec!["custom_font".to_owned()]);
+        families.insert(FontFamily::Monospace, vec!["custom_font".to_owned()]);
+
+        Ok(FontDefinitions {
+            font_data,
+            families,
+        })
     }
 
     if let Ok(fonts) = load_font() {
         egui_ctx.set_fonts(fonts);
-    }
-
-    match load_font() {
-        Ok(fonts) => egui_ctx.set_fonts(fonts),
-        Err(e) => {
-            println!("Failed to load font: {:?}", e);
-        }
     }
 
     // Initialize application state
@@ -440,20 +580,29 @@ fn main() -> Result<()> {
         current_operation: None,
         progress: None,
         error: None,
+        hint: None,
     }));
 
     // Self-update + fetch latest release information
     do_init(app_state.clone());
+    do_nextui_release_check(app_state.clone());
 
     let start_time: Instant = Instant::now();
 
+    let mut submenu: Submenu = Submenu::NextUI;
+    let mut quit = false;
+
     'running: loop {
+        if quit {
+            break;
+        }
+
         egui_state.input.time = Some(start_time.elapsed().as_secs_f64());
         egui_ctx.begin_pass(egui_state.input.take());
 
         // UI rendering
         egui::CentralPanel::default().show(&egui_ctx, |ui| {
-            ui.vertical_centered(|ui| {
+            ui.vertical(|ui| {
                 // Check application state
                 let state_lock = app_state.lock().unwrap();
                 let update_in_progress = state_lock.current_operation.is_some();
@@ -464,53 +613,39 @@ fn main() -> Result<()> {
                         .color(Color32::from_rgb(150, 150, 150))
                         .size(8.0),
                 );
-                ui.add_space(8.0);
-
-                let quick_update_button =
-                    ui.add_enabled(!update_in_progress, Button::new("Quick Update"));
-                // Initiate update if button clicked
-                if quick_update_button.clicked() {
-                    // Clear any previous errors
-                    app_state.lock().unwrap().error = None;
-                    do_update(app_state.clone(), false);
-                }
-
-                // Focus the update button for controller navigation
-                ui.memory_mut(|r| {
-                    if r.focused().is_none() {
-                        r.request_focus(quick_update_button.id);
-                    }
-                });
-                ui.label(
-                    RichText::new("MinUI.zip only")
-                        .size(8.0)
-                        .color(Color32::from_rgb(150, 150, 150)),
-                );
-
                 ui.add_space(4.0);
 
-                let full_update_button =
-                    ui.add_enabled(!update_in_progress, Button::new("Full Update"));
+                ui.add_enabled_ui(!update_in_progress, |ui| {
+                    let menu = match submenu {
+                        Submenu::None => {
+                            let nextui_button = ui.button("NextUI");
+                            if nextui_button.clicked() {
+                                do_nextui_release_check(app_state.clone());
+                                submenu = Submenu::NextUI;
+                            }
+                            if ui.button("Pakman").clicked() {
+                                submenu = Submenu::Pakman;
+                            }
+                            ui.add_space(4.0);
+                            if ui.button("Quit").clicked() {
+                                quit = true;
+                            }
 
-                ui.label(
-                    RichText::new("Extract full zip files (base + extras)")
-                        .size(8.0)
-                        .color(Color32::from_rgb(150, 150, 150)),
-                );
-                if full_update_button.clicked() {
-                    // Clear any previous errors
-                    app_state.lock().unwrap().error = None;
-                    do_update(app_state.clone(), true);
-                }
+                            nextui_button
+                        }
+                        Submenu::NextUI => nextui_ui(ui, &app_state),
+                        Submenu::Pakman => pakman_ui(ui, &app_state),
+                    };
+
+                    // Focus the first available button for controller navigation
+                    ui.memory_mut(|r| {
+                        if r.focused().is_none() {
+                            r.request_focus(menu.id);
+                        }
+                    });
+                });
 
                 ui.add_space(8.0);
-
-                // Show release information if available
-                if let Some(release) = &app_state.lock().unwrap().latest_release {
-                    let version = format!("Latest version: NextUI {}", release.tag_name);
-                    ui.label(version);
-                    ui.add_space(8.0);
-                }
 
                 // Display current operation
                 if let Some(operation) = &app_state.lock().unwrap().current_operation {
@@ -527,6 +662,39 @@ fn main() -> Result<()> {
                     ui.add(ProgressBar::new(progress).show_percentage());
                 }
             });
+
+            if let Some(hint) = &app_state.lock().unwrap().hint {
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().max_rect(Rect {
+                        min: Pos2 {
+                            x: 10.0,
+                            y: ui.max_rect().height() - 4.0,
+                        },
+                        max: Pos2 {
+                            x: ui.max_rect().width(),
+                            y: ui.max_rect().height(),
+                        },
+                    } )
+                    ,
+                    |ui| {
+                        ui.label(RichText::new(hint).size(8.0));
+                    },
+                );
+            }
+
+            // HACK: for some reason dynamic text isn't rendered without this
+            ui.allocate_ui(
+                Vec2::ZERO,
+                |ui| {
+                    ui.label(
+                        RichText::new(
+                            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789~`!@#$%^&*()-=_+[]{};':\",.<>/?",
+                        )
+                        .size(8.0)
+                        .color(Color32::TRANSPARENT),
+                    );
+                },
+            );
         });
 
         // End frame and render
