@@ -4,7 +4,7 @@ use egui_backend::egui;
 use egui_backend::{sdl2::event::Event, DpiScaling, ShaderVersion};
 use egui_sdl2_gl as egui_backend;
 use egui_sdl2_gl::egui::{
-    CornerRadius, FontData, FontDefinitions, FontFamily, Pos2, Rect, RichText, Vec2,
+    CornerRadius, FontData, FontDefinitions, FontFamily, Pos2, Rect, RichText, Spinner, Vec2,
 };
 use reqwest::blocking::RequestBuilder;
 use serde::Deserialize;
@@ -34,10 +34,16 @@ struct Release {
 }
 
 // Application state shared between UI thread and update thread
+
+enum Progress {
+    Indeterminate,
+    Determinate(f32),
+}
+
 struct AppState {
     latest_release: Option<Release>,
     current_operation: Option<String>,
-    progress: Option<f32>,
+    progress: Option<Progress>,
     error: Option<String>,
     hint: Option<String>,
 }
@@ -120,6 +126,7 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some("Fetching latest updater release...".to_string());
+        state.progress = Some(Progress::Indeterminate);
     }
 
     let release = fetch_latest_release("LanderN/nextui-updater-pak")?;
@@ -154,14 +161,14 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
 
     let bytes = download(request_builder, |pr| {
         let mut state = app_state.lock().unwrap();
-        state.progress = Some(pr);
+        state.progress = Some(Progress::Determinate(pr));
     })?;
 
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation =
             format!("Extracting NextUI Updater {}...", release.tag_name).into();
-        state.progress = None;
+        state.progress = Some(Progress::Indeterminate);
     }
 
     // Move the current binary to a backup location
@@ -197,6 +204,7 @@ fn do_nextui_release_check(app_state: Arc<Mutex<AppState>>) {
         {
             let mut state = app_state.lock().unwrap();
             state.current_operation = Some("Fetching latest NextUI release...".to_string());
+            state.progress = Some(Progress::Indeterminate);
         }
 
         match fetch_latest_release("LoveRetro/NextUI") {
@@ -204,11 +212,13 @@ fn do_nextui_release_check(app_state: Arc<Mutex<AppState>>) {
                 let mut state = app_state.lock().unwrap();
                 state.latest_release = Some(release.clone());
                 state.current_operation = None;
+                state.progress = None;
             }
             Err(err) => {
                 let mut state = app_state.lock().unwrap();
                 state.current_operation = None;
                 state.error = Some(format!("Fetch failed: {}", err));
+                state.progress = None;
             }
         }
     });
@@ -246,6 +256,7 @@ fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
             let mut state = app_state.lock().unwrap();
             state.current_operation = None;
             state.error = Some(format!("Update failed: {}", err));
+            state.progress = None;
 
             // Try to fetch latest release information again
             do_nextui_release_check(app_state.clone());
@@ -259,6 +270,7 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
         let release = state.latest_release.clone().ok_or("No release found")?;
 
         state.current_operation = Some("Downloading update...".to_string());
+        state.progress = Some(Progress::Indeterminate);
 
         release
     };
@@ -274,6 +286,7 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = format!("Downloading {}...", asset.name).into();
+        state.progress = Some(Progress::Indeterminate);
     }
 
     println!("Downloading from {}", asset.url);
@@ -285,13 +298,13 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
 
     let bytes = download(request_builder, |pr| {
         let mut state = app_state.lock().unwrap();
-        state.progress = Some(pr);
+        state.progress = Some(Progress::Determinate(pr));
     })?;
 
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = format!("Extracting {}...", asset.name).into();
-        state.progress = None;
+        state.progress = Some(Progress::Indeterminate);
     }
 
     // Extract the update package
@@ -343,6 +356,7 @@ fn do_pakman_update(app_state: Arc<Mutex<AppState>>) {
             let mut state = app_state.lock().unwrap();
             state.current_operation = None;
             state.error = Some(format!("Update failed: {}", err));
+            state.progress = None;
         }
     });
 }
@@ -355,6 +369,7 @@ fn update_pakman(app_state: Arc<Mutex<AppState>>) -> Result<()> {
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = Some(format!("Downloading Pakman {}...", release.tag_name));
+        state.progress = Some(Progress::Indeterminate);
     }
 
     println!("Downloading from {}", release.assets[0].url);
@@ -366,13 +381,13 @@ fn update_pakman(app_state: Arc<Mutex<AppState>>) -> Result<()> {
 
     let bytes = download(request_builder, |pr| {
         let mut state = app_state.lock().unwrap();
-        state.progress = Some(pr);
+        state.progress = Some(Progress::Determinate(pr));
     })?;
 
     {
         let mut state = app_state.lock().unwrap();
         state.current_operation = format!("Extracting Pakman {}...", release.tag_name).into();
-        state.progress = None;
+        state.progress = Some(Progress::Indeterminate);
     }
 
     extract_pak(bytes)?;
@@ -678,8 +693,15 @@ fn main() -> Result<()> {
                 }
 
                 // Show progress bar if available
-                if let Some(progress) = app_state.lock().unwrap().progress {
-                    ui.add(ProgressBar::new(progress).show_percentage());
+                if let Some(progress) = &app_state.lock().unwrap().progress {
+                    match progress {
+                        Progress::Indeterminate => {
+                            ui.add(Spinner::new().color(Color32::WHITE));
+                        }
+                        Progress::Determinate(pr) => {
+                            ui.add(ProgressBar::new(*pr).show_percentage());
+                        }
+                    }
                 }
             });
 
