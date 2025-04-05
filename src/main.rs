@@ -6,7 +6,7 @@ use egui_sdl2_gl as egui_backend;
 use egui_sdl2_gl::egui::{
     CornerRadius, FontData, FontDefinitions, FontFamily, Pos2, Rect, RichText, Vec2,
 };
-use reqwest::blocking::{RequestBuilder, Response};
+use reqwest::blocking::RequestBuilder;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -103,7 +103,7 @@ fn download(request: RequestBuilder, progress_cb: impl Fn(f32)) -> Result<Bytes>
 
         // Show progress
         if total_size > 0 {
-            let percentage = downloaded as f64 / total_size as f64 * 100.0;
+            let percentage = downloaded as f64 / total_size as f64;
             progress_cb(percentage as f32);
         }
     }
