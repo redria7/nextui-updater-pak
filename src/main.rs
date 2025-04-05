@@ -53,7 +53,7 @@ const USER_AGENT: &str = "NextUI Updater";
 const SDCARD_ROOT: &str = "/mnt/SDCARD/";
 const WINDOW_WIDTH: u32 = 1024;
 const WINDOW_HEIGHT: u32 = 768;
-const DPI_SCALE: f32 = 3.75;
+const DPI_SCALE: f32 = 4.0;
 
 const FONTS: [&str; 2] = ["BPreplayBold-unhinted.otf", "chillroundm.ttf"];
 
@@ -478,6 +478,14 @@ fn init_sdl() -> Result<(
 fn nextui_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Response {
     let latest_release = app_state.lock().unwrap().latest_release.clone();
 
+    // Show release information if available
+    if let Some(release) = latest_release {
+        let version = format!("Latest version: NextUI {}", release.tag_name);
+        ui.label(RichText::new(version).size(10.0));
+    }
+
+    ui.add_space(8.0);
+
     let quick_update_button = ui.add(Button::new("Quick Update"));
 
     // Initiate update if button clicked
@@ -495,14 +503,6 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Respo
         // Clear any previous errors
         app_state.lock().unwrap().error = None;
         do_update(app_state.clone(), true);
-    }
-
-    ui.add_space(4.0);
-
-    // Show release information if available
-    if let Some(release) = latest_release {
-        let version = format!("Latest version: NextUI {}", release.tag_name);
-        ui.label(RichText::new(version).size(8.0));
     }
 
     // HINTS
@@ -620,7 +620,7 @@ fn main() -> Result<()> {
 
         // UI rendering
         egui::CentralPanel::default().show(&egui_ctx, |ui| {
-            ui.vertical(|ui| {
+            ui.vertical_centered(|ui| {
                 // Check application state
                 let state_lock = app_state.lock().unwrap();
                 let update_in_progress = state_lock.current_operation.is_some();
@@ -629,7 +629,7 @@ fn main() -> Result<()> {
                 ui.label(
                     RichText::new(format!("NextUI Updater {}", env!("CARGO_PKG_VERSION")))
                         .color(Color32::from_rgb(150, 150, 150))
-                        .size(8.0),
+                        .size(10.0),
                 );
                 ui.add_space(4.0);
 
@@ -667,7 +667,7 @@ fn main() -> Result<()> {
 
                 // Display current operation
                 if let Some(operation) = &app_state.lock().unwrap().current_operation {
-                    ui.label(RichText::new(operation).color(Color32::from_rgb(150, 150, 150)));
+                    ui.label(RichText::new(operation).color(Color32::from_rgb(150, 150, 150)).size(10.0));
                 }
 
                 // Display error if any
@@ -685,17 +685,18 @@ fn main() -> Result<()> {
                 ui.allocate_new_ui(
                     egui::UiBuilder::new().max_rect(Rect {
                         min: Pos2 {
-                            x: 10.0,
-                            y: ui.max_rect().height() - 4.0,
+                            x: 0.0,
+                            y: ui.max_rect().height() - 2.0,
                         },
                         max: Pos2 {
-                            x: ui.max_rect().width(),
+                            x: 1024.0 / DPI_SCALE,
                             y: ui.max_rect().height(),
                         },
-                    } )
-                    ,
+                    }),
                     |ui| {
-                        ui.label(RichText::new(hint).size(8.0));
+                        ui.centered_and_justified(|ui| {
+                            ui.label(RichText::new(hint).size(10.0));
+                        });
                     },
                 );
             }
@@ -708,8 +709,8 @@ fn main() -> Result<()> {
                         RichText::new(
                             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789~`!@#$%^&*()-=_+[]{};':\",.<>/?",
                         )
-                        .size(8.0)
-                        .color(Color32::TRANSPARENT),
+                        .size(10.0)
+                        .color(Color32::TRANSPARENT)
                     );
                 },
             );
