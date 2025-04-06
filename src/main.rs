@@ -33,6 +33,17 @@ struct Release {
     assets: Vec<Asset>,
 }
 
+#[derive(Deserialize, Clone, Debug)]
+struct Tag {
+    pub name: String,
+    pub commit: Commit,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+struct Commit {
+    pub sha: String,
+}
+
 // Application state shared between UI thread and update thread
 
 enum Progress {
@@ -43,11 +54,13 @@ enum Progress {
 struct AppState {
     submenu: Submenu,
     nextui_release: Option<Release>,
+    nextui_tag: Option<Tag>,
     pakman_release: Option<Release>,
     current_operation: Option<String>,
     progress: Option<Progress>,
     error: Option<String>,
     hint: Option<String>,
+    should_quit: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +96,24 @@ fn fetch_latest_release(repo: &str) -> Result<Release> {
     }
 
     Ok(response.json()?)
+}
+
+fn fetch_tag(repo: &str, tag: &str) -> Result<Tag> {
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .get(format!("https://api.github.com/repos/{repo}/tags"))
+        .header("User-Agent", USER_AGENT)
+        .send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("GitHub API request failed: {}", response.status()).into());
+    }
+
+    let tags: Vec<Tag> = response.json()?;
+
+    let tag = tags.iter().find(|t| t.name == tag).ok_or("Tag not found")?;
+
+    Ok(tag.clone())
 }
 
 fn extract_zip(bytes: Bytes, do_root_dir: bool, progress_cb: impl Fn(f32)) -> Result<()> {
@@ -254,19 +285,52 @@ fn do_nextui_release_check(app_state: Arc<Mutex<AppState>>) {
             state.progress = Some(Progress::Indeterminate);
         }
 
-        match fetch_latest_release("LoveRetro/NextUI") {
-            Ok(release) => {
-                let mut state = app_state.lock().unwrap();
-                state.nextui_release = Some(release.clone());
-                state.current_operation = None;
-                state.progress = None;
+        let latest_release = fetch_latest_release("LoveRetro/NextUI");
+
+        {
+            let mut state = app_state.lock().unwrap();
+            match &latest_release {
+                Ok(release) => {
+                    state.nextui_release = Some(release.clone());
+                }
+                Err(err) => {
+                    state.error = Some(format!("Fetch failed: {}", err));
+                }
             }
-            Err(err) => {
-                let mut state = app_state.lock().unwrap();
-                state.current_operation = None;
-                state.error = Some(format!("Fetch failed: {}", err));
-                state.progress = None;
+            state.current_operation = None;
+            state.progress = None;
+        }
+
+        if latest_release.is_err() {
+            return;
+        }
+        let latest_release = latest_release.unwrap();
+
+        // Fetch latest tag information
+        {
+            let mut state = app_state.lock().unwrap();
+            state.current_operation = Some("Fetching latest NextUI tag...".to_string());
+            state.progress = Some(Progress::Indeterminate);
+        }
+
+        let latest_tag = fetch_tag("LoveRetro/NextUI", &latest_release.tag_name);
+        {
+            let mut state = app_state.lock().unwrap();
+            match latest_tag {
+                Ok(tag) => {
+                    state.nextui_tag = Some(tag.clone());
+                    println!("Latest tag: {:?}", tag);
+                }
+                Err(err) => {
+                    state.error = Some(format!("Fetch failed: {}", err));
+                }
             }
+        }
+
+        {
+            let mut state = app_state.lock().unwrap();
+            state.current_operation = None;
+            state.progress = None;
         }
     });
 }
@@ -297,7 +361,7 @@ fn do_pakman_release_check(app_state: Arc<Mutex<AppState>>) {
     });
 }
 
-fn do_init(app_state: Arc<Mutex<AppState>>) {
+fn do_self_update(app_state: Arc<Mutex<AppState>>) {
     thread::spawn(move || {
         // Do self-update
         match self_update(app_state.clone()) {
@@ -322,7 +386,7 @@ fn do_init(app_state: Arc<Mutex<AppState>>) {
 fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
     thread::spawn(move || {
         if app_state.lock().unwrap().nextui_release.is_none() {
-            do_init(app_state.clone());
+            do_self_update(app_state.clone());
         }
 
         if let Err(err) = update_nextui(app_state.clone(), full) {
@@ -578,46 +642,84 @@ fn init_sdl() -> Result<(
     Ok((sdl_context, window, event_pump, controller))
 }
 
-fn nextui_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Response {
+fn nextui_ui(
+    ui: &mut egui::Ui,
+    app_state: &Arc<Mutex<AppState>>,
+    current_version: Option<&str>,
+) -> egui::Response {
     let latest_release = app_state.lock().unwrap().nextui_release.clone();
+    let latest_tag = app_state.lock().unwrap().nextui_tag.clone();
+    let mut update_available = true;
 
     // Show release information if available
-    if let Some(release) = latest_release {
-        let version = format!("Latest version: NextUI {}", release.tag_name);
-        ui.label(RichText::new(version).size(10.0));
+    match (current_version, latest_tag, latest_release) {
+        (Some(current_version), Some(tag), _) => {
+            if tag.commit.sha.starts_with(current_version) {
+                ui.label(
+                    RichText::new(format!(
+                        "You currently have the latest available version:\nNextUI {}",
+                        tag.name
+                    ))
+                    .size(10.0),
+                );
+                update_available = false;
+            } else {
+                ui.label(
+                    RichText::new(format!("New version available: NextUI {}", tag.name)).size(10.0),
+                );
+            }
+        }
+        (_, _, Some(release)) => {
+            let version = format!("Latest version: NextUI {}", release.tag_name);
+            ui.label(RichText::new(version).size(10.0));
+        }
+        _ => {
+            ui.label(RichText::new("No release information available".to_string()).size(10.0));
+        }
     }
 
     ui.add_space(8.0);
 
-    let quick_update_button = ui.add(Button::new("Quick Update"));
+    if update_available {
+        let quick_update_button = ui.add(Button::new("Quick Update"));
 
-    // Initiate update if button clicked
-    if quick_update_button.clicked() {
-        // Clear any previous errors
-        app_state.lock().unwrap().error = None;
-        do_update(app_state.clone(), false);
-    }
+        // Initiate update if button clicked
+        if quick_update_button.clicked() {
+            // Clear any previous errors
+            app_state.lock().unwrap().error = None;
+            do_update(app_state.clone(), false);
+        }
 
-    ui.add_space(4.0);
+        ui.add_space(4.0);
 
-    let full_update_button = ui.add(Button::new("Full Update"));
+        let full_update_button = ui.add(Button::new("Full Update"));
 
-    if full_update_button.clicked() {
-        // Clear any previous errors
-        app_state.lock().unwrap().error = None;
-        do_update(app_state.clone(), true);
-    }
+        if full_update_button.clicked() {
+            // Clear any previous errors
+            app_state.lock().unwrap().error = None;
+            do_update(app_state.clone(), true);
+        }
 
-    // HINTS
-    if quick_update_button.has_focus() {
-        app_state.lock().unwrap().hint = Some("Update MinUI.zip only".to_string());
-    } else if full_update_button.has_focus() {
-        app_state.lock().unwrap().hint = Some("Extract full zip files (base + extras)".to_string());
+        // HINTS
+        if quick_update_button.has_focus() {
+            app_state.lock().unwrap().hint = Some("Update MinUI.zip only".to_string());
+        } else if full_update_button.has_focus() {
+            app_state.lock().unwrap().hint =
+                Some("Extract full zip files (base + extras)".to_string());
+        } else {
+            app_state.lock().unwrap().hint = None;
+        }
+
+        quick_update_button
     } else {
-        app_state.lock().unwrap().hint = None;
-    }
+        let button = ui.button("Quit");
 
-    quick_update_button
+        if button.clicked() {
+            app_state.lock().unwrap().should_quit = true;
+        }
+
+        button
+    }
 }
 
 fn pakman_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Response {
@@ -717,11 +819,13 @@ fn main() -> Result<()> {
     let app_state = Arc::new(Mutex::new(AppState {
         submenu: Submenu::None,
         nextui_release: None,
+        nextui_tag: None,
         pakman_release: None,
         current_operation: None,
         progress: None,
         error: None,
         hint: None,
+        should_quit: false,
     }));
 
     let enter_submenu = |s: Submenu| {
@@ -730,15 +834,17 @@ fn main() -> Result<()> {
         state.hint = None;
     };
 
-    // Self-update + fetch latest release information
-    do_init(app_state.clone());
+    // Get current NextUI version
+    let version_file = std::fs::read_to_string(SDCARD_ROOT.to_owned() + ".system/version.txt")?;
+    let current_sha = version_file.lines().nth(1);
+
+    // Self-update
+    do_self_update(app_state.clone());
 
     let start_time: Instant = Instant::now();
 
-    let mut quit = false;
-
     'running: loop {
-        if quit {
+        if app_state.lock().unwrap().should_quit {
             break;
         }
 
@@ -776,7 +882,7 @@ fn main() -> Result<()> {
                             }
                             ui.add_space(4.0);
                             if ui.button("Quit").clicked() {
-                                quit = true;
+                                app_state.lock().unwrap().should_quit = true;
                             }
 
                             // HINTS
@@ -792,7 +898,7 @@ fn main() -> Result<()> {
 
                             nextui_button
                         }
-                        Submenu::NextUI => nextui_ui(ui, &app_state),
+                        Submenu::NextUI => nextui_ui(ui, &app_state, current_sha),
                         Submenu::Pakman => pakman_ui(ui, &app_state),
                     };
 
@@ -882,11 +988,11 @@ fn main() -> Result<()> {
         painter.paint_jobs(None, textures_delta, paint_jobs);
         window.gl_swap_window();
 
-        let mut handle_back_button = || {
+        let handle_back_button = || {
             let submenu = { app_state.lock().unwrap().submenu };
             match submenu {
                 Submenu::None => {
-                    quit = true;
+                    app_state.lock().unwrap().should_quit = true;
                 }
                 Submenu::NextUI => {
                     enter_submenu(Submenu::None);
