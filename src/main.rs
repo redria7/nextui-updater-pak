@@ -1,3 +1,9 @@
+#![deny(clippy::all)]
+#![warn(clippy::pedantic)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(dead_code)]
+
 use bytes::Bytes;
 use egui::{Button, Color32, FullOutput, ProgressBar};
 use egui_backend::egui;
@@ -118,6 +124,33 @@ fn fetch_tag(repo: &str, tag: &str) -> Result<Tag> {
 }
 
 fn extract_zip(bytes: Bytes, do_root_dir: bool, progress_cb: impl Fn(f32)) -> Result<()> {
+    // Helper
+    use std::path::Path;
+    use std::{fs, io};
+    fn copy_dir_all(
+        src: impl AsRef<Path>,
+        dst: impl AsRef<Path>,
+        file_copied_cb: &Arc<impl Fn()>,
+    ) -> io::Result<()> {
+        fs::create_dir_all(&dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            if ty.is_dir() {
+                copy_dir_all(
+                    entry.path(),
+                    dst.as_ref().join(entry.file_name()),
+                    &file_copied_cb.clone(),
+                )?;
+                file_copied_cb();
+            } else {
+                fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+                file_copied_cb();
+            }
+        }
+        Ok(())
+    }
+
     // Extract the update package
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
 
@@ -132,38 +165,13 @@ fn extract_zip(bytes: Bytes, do_root_dir: bool, progress_cb: impl Fn(f32)) -> Re
     let amount_of_files = archive.len();
     let files_copied: Arc<Mutex<usize>> = Arc::new(Mutex::new(1));
 
-    let file_copied_cb = Arc::new(|| {
+    let file_copied_cb = || {
         *files_copied.lock() += 1;
         progress_cb(*files_copied.lock() as f32 / amount_of_files as f32);
-    });
+    };
 
     // Copy the files to the correct location
-    use std::path::Path;
-    use std::{fs, io};
-    fn copy_dir_all(
-        src: impl AsRef<Path>,
-        dst: impl AsRef<Path>,
-        file_copied_cb: Arc<impl Fn()>,
-    ) -> io::Result<()> {
-        fs::create_dir_all(&dst)?;
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let ty = entry.file_type()?;
-            if ty.is_dir() {
-                copy_dir_all(
-                    entry.path(),
-                    dst.as_ref().join(entry.file_name()),
-                    file_copied_cb.clone(),
-                )?;
-                file_copied_cb();
-            } else {
-                fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
-                file_copied_cb();
-            }
-        }
-        Ok(())
-    }
-    copy_dir_all(temp_dir.path(), SDCARD_ROOT, file_copied_cb)?;
+    copy_dir_all(temp_dir.path(), SDCARD_ROOT, &Arc::new(file_copied_cb))?;
 
     Ok(())
 }
@@ -206,16 +214,17 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
         state.progress = Some(Progress::Indeterminate);
     }
 
+    println!("Fetching latest updater release...");
+
     let release = fetch_latest_release("LanderN/nextui-updater-pak")?;
+
+    println!("Latest updater release: {release:?}");
 
     let available = semver::Version::parse(&release.tag_name)?;
     let installed = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
 
     if available > installed {
-        println!(
-            "New version available: {} (current: {})",
-            available, installed
-        );
+        println!("New version available: {available} (current: {installed})",);
 
         let mut state = app_state.lock();
         state.current_operation = Some("Downloading updater...".to_string());
@@ -278,61 +287,59 @@ fn self_update(app_state: Arc<Mutex<AppState>>) -> Result<()> {
 }
 
 fn do_nextui_release_check(app_state: Arc<Mutex<AppState>>) {
-    thread::spawn(move || {
-        // Fetch latest release information
-        {
-            let mut state = app_state.lock();
-            state.current_operation = Some("Fetching latest NextUI release...".to_string());
-            state.progress = Some(Progress::Indeterminate);
-        }
+    // Fetch latest release information
+    {
+        let mut state = app_state.lock();
+        state.current_operation = Some("Fetching latest NextUI release...".to_string());
+        state.progress = Some(Progress::Indeterminate);
+    }
 
-        let latest_release = fetch_latest_release("LoveRetro/NextUI");
+    let latest_release = fetch_latest_release("LoveRetro/NextUI");
 
-        {
-            let mut state = app_state.lock();
-            match &latest_release {
-                Ok(release) => {
-                    state.nextui_release = Some(release.clone());
-                }
-                Err(err) => {
-                    state.error = Some(format!("Fetch failed: {}", err));
-                    state.current_operation = None;
-                    state.progress = None;
-                }
+    {
+        let mut state = app_state.lock();
+        match &latest_release {
+            Ok(release) => {
+                state.nextui_release = Some(release.clone());
+            }
+            Err(err) => {
+                state.error = Some(format!("Fetch failed: {err}"));
+                state.current_operation = None;
+                state.progress = None;
             }
         }
+    }
 
-        if latest_release.is_err() {
-            return;
-        }
-        let latest_release = latest_release.unwrap();
+    if latest_release.is_err() {
+        return;
+    }
+    let latest_release = latest_release.unwrap();
 
-        // Fetch latest tag information
-        {
-            let mut state = app_state.lock();
-            state.current_operation = Some("Fetching latest NextUI tag...".to_string());
-            state.progress = Some(Progress::Indeterminate);
-        }
+    // Fetch latest tag information
+    {
+        let mut state = app_state.lock();
+        state.current_operation = Some("Fetching latest NextUI tag...".to_string());
+        state.progress = Some(Progress::Indeterminate);
+    }
 
-        let latest_tag = fetch_tag("LoveRetro/NextUI", &latest_release.tag_name);
-        {
-            let mut state = app_state.lock();
-            match latest_tag {
-                Ok(tag) => {
-                    state.nextui_tag = Some(tag.clone());
-                }
-                Err(err) => {
-                    state.error = Some(format!("Fetch failed: {}", err));
-                }
+    let latest_tag = fetch_tag("LoveRetro/NextUI", &latest_release.tag_name);
+    {
+        let mut state = app_state.lock();
+        match latest_tag {
+            Ok(tag) => {
+                state.nextui_tag = Some(tag.clone());
+            }
+            Err(err) => {
+                state.error = Some(format!("Fetch failed: {err}"));
             }
         }
+    }
 
-        {
-            let mut state = app_state.lock();
-            state.current_operation = None;
-            state.progress = None;
-        }
-    });
+    {
+        let mut state = app_state.lock();
+        state.current_operation = None;
+        state.progress = None;
+    }
 }
 
 fn do_pakman_release_check(app_state: Arc<Mutex<AppState>>) {
@@ -354,7 +361,7 @@ fn do_pakman_release_check(app_state: Arc<Mutex<AppState>>) {
             Err(err) => {
                 let mut state = app_state.lock();
                 state.current_operation = None;
-                state.error = Some(format!("Fetch failed: {}", err));
+                state.error = Some(format!("Fetch failed: {err}"));
                 state.progress = None;
             }
         }
@@ -362,38 +369,31 @@ fn do_pakman_release_check(app_state: Arc<Mutex<AppState>>) {
 }
 
 fn do_self_update(app_state: Arc<Mutex<AppState>>) {
-    thread::spawn(move || {
-        // Do self-update
-        match self_update(app_state.clone()) {
-            Ok(()) => {
-                let mut state = app_state.lock();
-                state.current_operation = None;
-                state.progress = None;
-            }
-            Err(err) => {
-                let mut state = app_state.lock();
-                state.current_operation = None;
-                state.error = Some(format!("Self-update failed: {}", err));
-                state.progress = None;
-
-                // Give the user a moment to see the error message
-                thread::sleep(std::time::Duration::from_secs(1));
-            }
+    // Do self-update
+    let result = { self_update(app_state.clone()) };
+    match result {
+        Ok(()) => {
+            let mut state = app_state.lock();
+            state.current_operation = None;
+            state.progress = None;
         }
-    });
+        Err(err) => {
+            let mut state = app_state.lock();
+            state.current_operation = None;
+            state.error = Some(format!("Self-update failed: {err}"));
+            state.progress = None;
+        }
+    }
 }
 
 fn do_update(app_state: Arc<Mutex<AppState>>, full: bool) {
     thread::spawn(move || {
-        if app_state.lock().nextui_release.is_none() {
-            do_self_update(app_state.clone());
-        }
-
         if let Err(err) = update_nextui(app_state.clone(), full) {
             let mut state = app_state.lock();
             state.current_operation = None;
-            state.error = Some(format!("Update failed: {}", err));
+            state.error = Some(format!("Update failed: {err}"));
             state.progress = None;
+            drop(state);
 
             // Try to fetch latest release information again
             do_nextui_release_check(app_state.clone());
@@ -446,7 +446,13 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
 
     // Extract the update package
 
-    if !full {
+    if full {
+        // Full update, extract all files
+        extract_zip(bytes, false, |pr| {
+            let mut state = app_state.lock();
+            state.progress = Some(Progress::Determinate(pr));
+        })?;
+    } else {
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
         // "Quick" update, just extract MinUI.zip
 
@@ -462,12 +468,6 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
         // Write the extracted file
         let mut file = File::create([SDCARD_ROOT, "MinUI.zip"].join("/"))?;
         file.write_all(&minui_data)?;
-    } else {
-        // Full update, extract all files
-        extract_zip(bytes, false, |pr| {
-            let mut state = app_state.lock();
-            state.progress = Some(Progress::Determinate(pr));
-        })?;
     }
 
     {
@@ -495,7 +495,7 @@ fn do_pakman_update(app_state: Arc<Mutex<AppState>>) {
         if let Err(err) = update_pakman(app_state.clone()) {
             let mut state = app_state.lock();
             state.current_operation = None;
-            state.error = Some(format!("Update failed: {}", err));
+            state.error = Some(format!("Update failed: {err}"));
             state.progress = None;
         }
     });
@@ -620,7 +620,7 @@ fn init_sdl() -> Result<(
         match game_controller_subsystem.open(id) {
             Ok(c) => Some(c),
             Err(e) => {
-                eprintln!("Failed to open controller {}: {:?}", id, e);
+                eprintln!("Failed to open controller {id}: {e:?}");
                 None
             }
         }
@@ -644,7 +644,7 @@ fn init_sdl() -> Result<(
 
 fn nextui_ui(
     ui: &mut egui::Ui,
-    app_state: &Arc<Mutex<AppState>>,
+    app_state: Arc<Mutex<AppState>>,
     current_version: Option<&str>,
 ) -> egui::Response {
     let latest_release = app_state.lock().nextui_release.clone();
@@ -721,7 +721,7 @@ fn nextui_ui(
     }
 }
 
-fn pakman_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Response {
+fn pakman_ui(ui: &mut egui::Ui, app_state: Arc<Mutex<AppState>>) -> egui::Response {
     let latest_release = app_state.lock().pakman_release.clone();
 
     // Show release information if available
@@ -749,6 +749,51 @@ fn pakman_ui(ui: &mut egui::Ui, app_state: &Arc<Mutex<AppState>>) -> egui::Respo
     button
 }
 
+// Load font from file
+fn load_font() -> Result<FontDefinitions> {
+    fn get_font_preference() -> Result<usize> {
+        // Load NextUI settings
+        let mut settings_file =
+            std::fs::File::open(SDCARD_ROOT.to_owned() + ".userdata/shared/minuisettings.txt")?;
+
+        let mut settings = String::new();
+        settings_file.read_to_string(&mut settings)?;
+
+        println!("Settings: {settings}");
+
+        // Very crappy parser
+        Ok(settings.contains("font=1").into())
+    }
+
+    // Now load the font
+    let mut path = PathBuf::from(SDCARD_ROOT);
+    path.push(format!(
+        ".system/res/{}",
+        FONTS[get_font_preference().unwrap_or(0)]
+    ));
+    println!("Loading font: {}", path.display());
+    let mut font_bytes = vec![];
+    std::fs::File::open(path)?.read_to_end(&mut font_bytes)?;
+
+    let mut font_data: BTreeMap<String, Arc<FontData>> = BTreeMap::new();
+
+    let mut families = BTreeMap::new();
+
+    font_data.insert(
+        "custom_font".to_owned(),
+        std::sync::Arc::new(FontData::from_owned(font_bytes)),
+    );
+
+    families.insert(FontFamily::Proportional, vec!["custom_font".to_owned()]);
+    families.insert(FontFamily::Monospace, vec!["custom_font".to_owned()]);
+
+    Ok(FontDefinitions {
+        font_data,
+        families,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     // Initialize SDL and create window
     let (_sdl_context, window, mut event_pump, _controller) = init_sdl()?;
@@ -764,50 +809,6 @@ fn main() -> Result<()> {
     egui_ctx.set_style(setup_ui_style());
 
     // Font stuff
-
-    // Load font from file
-    fn load_font() -> Result<FontDefinitions> {
-        fn get_font_preference() -> Result<usize> {
-            // Load NextUI settings
-            let mut settings_file =
-                std::fs::File::open(SDCARD_ROOT.to_owned() + ".userdata/shared/minuisettings.txt")?;
-
-            let mut settings = String::new();
-            settings_file.read_to_string(&mut settings)?;
-
-            println!("Settings: {}", settings);
-
-            // Very crappy parser
-            Ok(if settings.contains("font=1") { 1 } else { 0 })
-        }
-
-        // Now load the font
-        let mut path = PathBuf::from(SDCARD_ROOT);
-        path.push(format!(
-            ".system/res/{}",
-            FONTS[get_font_preference().unwrap_or(0)]
-        ));
-        println!("Loading font: {}", path.display());
-        let mut font_bytes = vec![];
-        std::fs::File::open(path)?.read_to_end(&mut font_bytes)?;
-
-        let mut font_data: BTreeMap<String, Arc<FontData>> = BTreeMap::new();
-
-        let mut families = BTreeMap::new();
-
-        font_data.insert(
-            "custom_font".to_owned(),
-            std::sync::Arc::new(FontData::from_owned(font_bytes)),
-        );
-
-        families.insert(FontFamily::Proportional, vec!["custom_font".to_owned()]);
-        families.insert(FontFamily::Monospace, vec!["custom_font".to_owned()]);
-
-        Ok(FontDefinitions {
-            font_data,
-            families,
-        })
-    }
 
     if let Ok(fonts) = load_font() {
         egui_ctx.set_fonts(fonts);
@@ -837,8 +838,11 @@ fn main() -> Result<()> {
     let current_sha = version_file.lines().nth(1);
 
     // Self-update
-    do_self_update(app_state.clone());
-    do_nextui_release_check(app_state.clone());
+    let app_state_clone = app_state.clone();
+    thread::spawn(move || {
+        do_self_update(app_state_clone.clone());
+        do_nextui_release_check(app_state_clone.clone());
+    });
 
     let start_time: Instant = Instant::now();
 
@@ -897,8 +901,8 @@ fn main() -> Result<()> {
 
                             nextui_button
                         }
-                        Submenu::NextUI => nextui_ui(ui, &app_state, current_sha),
-                        Submenu::Pakman => pakman_ui(ui, &app_state),
+                        Submenu::NextUI => nextui_ui(ui, app_state.clone(), current_sha),
+                        Submenu::Pakman => pakman_ui(ui, app_state.clone()),
                     };
 
                     // Focus the first available button for controller navigation
