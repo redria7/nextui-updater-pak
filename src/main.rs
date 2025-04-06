@@ -123,55 +123,15 @@ fn fetch_tag(repo: &str, tag: &str) -> Result<Tag> {
     Ok(tag.clone())
 }
 
-fn extract_zip(bytes: Bytes, do_root_dir: bool, progress_cb: impl Fn(f32)) -> Result<()> {
-    // Helper
-    use std::path::Path;
-    use std::{fs, io};
-    fn copy_dir_all(
-        src: impl AsRef<Path>,
-        dst: impl AsRef<Path>,
-        file_copied_cb: &Arc<impl Fn()>,
-    ) -> io::Result<()> {
-        fs::create_dir_all(&dst)?;
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let ty = entry.file_type()?;
-            if ty.is_dir() {
-                copy_dir_all(
-                    entry.path(),
-                    dst.as_ref().join(entry.file_name()),
-                    &file_copied_cb.clone(),
-                )?;
-                file_copied_cb();
-            } else {
-                fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
-                file_copied_cb();
-            }
-        }
-        Ok(())
-    }
-
+fn extract_zip(bytes: Bytes, do_root_dir: bool, _progress_cb: impl Fn(f32)) -> Result<()> {
     // Extract the update package
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
 
-    // Create a temporary directory to extract the files
-    let temp_dir = tempfile::tempdir_in(SDCARD_ROOT)?;
     if do_root_dir {
-        archive.extract_unwrapped_root_dir(&temp_dir, root_dir_common_filter)
+        archive.extract_unwrapped_root_dir(SDCARD_ROOT, root_dir_common_filter)
     } else {
-        archive.extract(&temp_dir)
+        archive.extract(SDCARD_ROOT)
     }?;
-
-    let amount_of_files = archive.len();
-    let files_copied: Arc<Mutex<usize>> = Arc::new(Mutex::new(1));
-
-    let file_copied_cb = || {
-        *files_copied.lock() += 1;
-        progress_cb(*files_copied.lock() as f32 / amount_of_files as f32);
-    };
-
-    // Copy the files to the correct location
-    copy_dir_all(temp_dir.path(), SDCARD_ROOT, &Arc::new(file_copied_cb))?;
 
     Ok(())
 }
