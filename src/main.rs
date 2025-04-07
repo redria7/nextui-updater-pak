@@ -676,13 +676,25 @@ fn nextui_ui(
 
         quick_update_button
     } else {
-        let button = ui.button("Quit");
+        let force_button = ui.button("Update anyway");
+        if force_button.clicked() {
+            app_state.lock().nextui_tag = None; // forget the tag
+        }
 
-        if button.clicked() {
+        let quit_button = ui.button("Quit");
+        if quit_button.clicked() {
             app_state.lock().should_quit = true;
         }
 
-        button
+        if quit_button.has_focus() {
+            app_state.lock().hint = Some("Quit NextUI Updater".to_string());
+        } else if force_button.has_focus() {
+            app_state.lock().hint = Some("Ignore current version".to_string());
+        } else {
+            app_state.lock().hint = None;
+        }
+
+        quit_button
     }
 }
 
