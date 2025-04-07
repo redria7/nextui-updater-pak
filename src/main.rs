@@ -799,7 +799,8 @@ fn main() -> Result<()> {
     };
 
     // Get current NextUI version
-    let version_file = std::fs::read_to_string(SDCARD_ROOT.to_owned() + ".system/version.txt")?;
+    let version_file =
+        std::fs::read_to_string(SDCARD_ROOT.to_owned() + ".system/version.txt").unwrap_or_default();
     let current_sha = version_file.lines().nth(1);
 
     // Self-update
