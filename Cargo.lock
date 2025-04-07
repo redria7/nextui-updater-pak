@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "nextui-updater-rs"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "bytes",
  "egui_sdl2_gl",

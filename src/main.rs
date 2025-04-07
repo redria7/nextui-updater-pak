@@ -142,7 +142,7 @@ fn download(request: RequestBuilder, progress_cb: impl Fn(f32)) -> Result<Bytes>
 
     let mut bytes = Vec::new();
     let mut downloaded: u64 = 0;
-    let mut buffer = [0; 8192];
+    let mut buffer = [0; 16384];
 
     loop {
         let bytes_read = response.read(&mut buffer)?;
@@ -378,7 +378,12 @@ fn update_nextui(app_state: Arc<Mutex<AppState>>, full: bool) -> Result<()> {
         .timeout(None)
         .build()?;
 
-    let asset = release.assets.first().ok_or("No assets found")?;
+    let assets = release.assets;
+    let asset = assets
+        .iter()
+        .find(|a| a.name.contains(if full { "all" } else { "base" }))
+        .or(assets.first())
+        .ok_or("No assets found")?;
     // Download the asset
     {
         let mut state = app_state.lock();
