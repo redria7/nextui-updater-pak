@@ -253,7 +253,7 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
 
     let start_time: Instant = Instant::now();
 
-    'running: loop {
+    loop {
         if app_state.should_quit() {
             break;
         }
@@ -361,8 +361,13 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
             textures_delta,
             shapes,
             pixels_per_point,
-            viewport_output: _,
+            viewport_output,
         } = egui_ctx.end_pass();
+
+        let repaint_after = viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("Missing ViewportId::ROOT")
+            .repaint_delay;
 
         // Process output
         egui_state.process_output(&window, &platform_output);
@@ -378,9 +383,9 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
         };
 
         // Process events
-        if let Some(event) = event_pump.wait_event_timeout(5) {
+        let mut process_event = |event| {
             match event {
-                Event::Quit { .. } => break 'running,
+                Event::Quit { .. } => app_state.set_should_quit(true),
                 Event::ControllerButtonDown {
                     timestamp, button, ..
                 } => {
@@ -429,6 +434,14 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                     egui_state.process_input(&window, event, &mut painter);
                 }
             }
+        };
+
+        if repaint_after.is_zero() {
+            for event in event_pump.poll_iter() {
+                process_event(event);
+            }
+        } else if let Some(event) = event_pump.wait_event_timeout(50) {
+            process_event(event);
         }
     }
 
