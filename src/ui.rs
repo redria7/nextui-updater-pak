@@ -199,8 +199,6 @@ fn load_font() -> Result<FontDefinitions> {
         let mut settings = String::new();
         settings_file.read_to_string(&mut settings)?;
 
-        println!("Settings: {settings}");
-
         // Very crappy parser
         Ok(settings.contains("font=1").into())
     }

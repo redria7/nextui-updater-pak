@@ -167,18 +167,15 @@ pub fn update_nextui(app_state: &AppStateManager, full: bool) -> Result<()> {
         .ok_or("No assets found")?;
 
     // Download the asset
-    app_state.start_determinate_operation("Downloading...");
+    app_state.start_determinate_operation(&format!("Downloading {}...", asset.name));
     println!("Downloading from {}", asset.url);
 
-    let bytes = download(&asset.url, |pr| {
-        app_state.update_progress(pr);
-    })?;
+    let bytes = download(&asset.url, |pr| app_state.update_progress(pr))?;
 
     app_state.set_current_operation(format!("Extracting {}...\nPlease wait...", asset.name).into());
     app_state.set_progress(Some(Progress::Indeterminate));
 
     // Extract the update package
-
     if full {
         // Full update, extract all files
         extract_zip(bytes, false, |pr| app_state.update_progress(pr))?;

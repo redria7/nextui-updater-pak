@@ -1,13 +1,14 @@
 use std::io::{Read, Write};
 
 use bytes::Bytes;
+use const_format::concatcp;
 use reqwest::IntoUrl;
 
 use crate::github::{Release, Tag};
 
 use crate::Result;
 
-const USER_AGENT: &str = "NextUI Updater";
+const USER_AGENT: &str = concatcp!("NextUIUpdater/", env!("CARGO_PKG_VERSION"));
 
 pub fn fetch_latest_release(repo: &str) -> Result<Release> {
     let client = reqwest::blocking::Client::new();
@@ -55,6 +56,9 @@ pub fn download<U: IntoUrl>(url: U, progress_cb: impl Fn(f32)) -> Result<Bytes> 
         .header("User-Agent", USER_AGENT);
 
     let mut response = request_builder.send()?;
+    println!("Status: {}", response.status());
+    println!("Headers: {:?}", response.headers());
+
     let total_size = response.content_length().unwrap_or(0);
 
     let mut bytes = Vec::new();
@@ -77,8 +81,6 @@ pub fn download<U: IntoUrl>(url: U, progress_cb: impl Fn(f32)) -> Result<Bytes> 
     }
 
     println!("\nDownload complete!");
-    println!("Status: {}", response.status());
-    println!("Headers: {:?}", response.headers());
 
     Ok(bytes.into())
 }
