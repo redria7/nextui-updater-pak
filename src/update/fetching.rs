@@ -1,7 +1,9 @@
 use std::io::{Read, Write};
+use std::sync::OnceLock;
 
 use bytes::Bytes;
 use const_format::concatcp;
+use reqwest::blocking::Client;
 use reqwest::IntoUrl;
 
 use crate::github::{Release, Tag};
@@ -10,9 +12,21 @@ use crate::Result;
 
 const USER_AGENT: &str = concatcp!("NextUIUpdater/", env!("CARGO_PKG_VERSION"));
 
+static CLIENT_CELL: OnceLock<Client> = OnceLock::new();
+
+fn get_client() -> &'static Client {
+    CLIENT_CELL.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .timeout(None)
+            .build()
+            .expect("Failed to create HTTP client")
+    })
+}
+
 pub fn fetch_latest_release(repo: &str) -> Result<Release> {
-    let client = reqwest::blocking::Client::new();
-    let response = client
+    let response = get_client()
         .get(format!(
             "https://api.github.com/repos/{repo}/releases/latest"
         ))
@@ -27,8 +41,7 @@ pub fn fetch_latest_release(repo: &str) -> Result<Release> {
 }
 
 pub fn fetch_tag(repo: &str, tag: &str) -> Result<Tag> {
-    let client = reqwest::blocking::Client::new();
-    let response = client
+    let response = get_client()
         .get(format!("https://api.github.com/repos/{repo}/tags"))
         .header("User-Agent", USER_AGENT)
         .send()?;
@@ -45,12 +58,7 @@ pub fn fetch_tag(repo: &str, tag: &str) -> Result<Tag> {
 }
 
 pub fn download<U: IntoUrl>(url: U, progress_cb: impl Fn(f32)) -> Result<Bytes> {
-    let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .timeout(None)
-        .build()?;
-    let request_builder = client
+    let request_builder = get_client()
         .get(url)
         .header("Accept", "application/octet-stream")
         .header("User-Agent", USER_AGENT);
