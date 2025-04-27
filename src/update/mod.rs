@@ -50,11 +50,7 @@ fn extract_zip(bytes: Bytes, filter: Option<Vec<&str>>, progress_cb: impl Fn(f32
         }
 
         progress_cb(file_number as f32 / (archive_len - 1) as f32);
-
     }
-
-    archive.extract(SDCARD_ROOT)?;
-
 
     Ok(())
 }
