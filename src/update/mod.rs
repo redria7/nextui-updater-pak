@@ -4,26 +4,57 @@ use crate::{
 };
 use bytes::Bytes;
 use fetching::{download, fetch_latest_release, fetch_tag};
-use zip::read::root_dir_common_filter;
 
 use std::{
-    fs::File,
-    io::{Cursor, Read, Write},
-    process::exit,
-    thread,
+    fs::File, io::{Cursor, Read, Write}, path::PathBuf, process::exit, thread
 };
 
 mod fetching;
 
-fn extract_zip(bytes: Bytes, do_root_dir: bool, _progress_cb: impl Fn(f32)) -> Result<()> {
+fn extract_zip(bytes: Bytes, filter: Option<Vec<&str>>, progress_cb: impl Fn(f32)) -> Result<()> {
+    pub fn file_write_all_bytes(path: &PathBuf, bytes: &[u8]) -> Result<usize> {
+        let mut file = File::create(path)?;
+        file.set_len(0)?;
+        Ok(file.write(bytes)?)
+    }
+
     // Extract the update package
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+    let target_directory = PathBuf::from(SDCARD_ROOT);
+    let archive_len = archive.len();
 
-    if do_root_dir {
-        archive.extract_unwrapped_root_dir(SDCARD_ROOT, root_dir_common_filter)
-    } else {
-        archive.extract(SDCARD_ROOT)
-    }?;
+    for file_number in 0..archive_len {
+
+        let mut next = archive.by_index(file_number)?;
+
+        let sanitized_name = next.mangled_name();
+
+        if filter.is_some() && !filter.as_ref().unwrap().iter().any(|f| sanitized_name.starts_with(f)) {
+            println!("Skipping file: {sanitized_name:#?}");
+            continue;
+        }
+
+        if next.is_dir() {
+
+            let extracted_folder_path = target_directory.join(sanitized_name);
+            std::fs::create_dir_all(&extracted_folder_path)?;
+            println!("Created directory: {}", extracted_folder_path.display());
+
+        } else if next.is_file() {
+
+            let mut buffer: Vec<u8> = Vec::new();
+            let _bytes_read = next.read_to_end(&mut buffer)?;
+            let extracted_file_path = target_directory.join(sanitized_name);
+            file_write_all_bytes(&extracted_file_path, buffer.as_ref())?;
+            println!("Extracted file: {}", extracted_file_path.display());
+        }
+
+        progress_cb(file_number as f32 / (archive_len - 1) as f32);
+
+    }
+
+    archive.extract(SDCARD_ROOT)?;
+
 
     Ok(())
 }
@@ -62,9 +93,12 @@ pub fn self_update(app_state: &AppStateManager) -> Result<()> {
     std::fs::rename(&current_binary, current_binary.with_extension("bak"))?;
 
     // Extract the update package
-    let result = extract_zip(bytes, false, |pr| {
+    let result = extract_zip(bytes, None, |pr| {
         app_state.update_progress(pr);
     });
+
+    println!("Extraction complete!");
+    app_state.set_progress(Some(Progress::Indeterminate));
 
     if result.is_err() {
         // Move the backup back
@@ -178,24 +212,14 @@ pub fn update_nextui(app_state: &AppStateManager, full: bool) -> Result<()> {
     // Extract the update package
     if full {
         // Full update, extract all files
-        extract_zip(bytes, false, |pr| app_state.update_progress(pr))?;
+        extract_zip(bytes, None, |pr| app_state.update_progress(pr))?;
     } else {
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
-        // "Quick" update, just extract MinUI.zip
-
-        // Look for MinUI.zip in the archive
-        let mut minui_data = Vec::new();
-        match archive.by_name("MinUI.zip") {
-            Ok(mut file) => {
-                file.read_to_end(&mut minui_data)?;
-            }
-            Err(_) => return Err("File MinUI.zip not found in archive".into()),
-        }
-
-        // Write the extracted file
-        let mut file = File::create([SDCARD_ROOT, "MinUI.zip"].join("/"))?;
-        file.write_all(&minui_data)?;
+        // "Quick" update, just extract MinUI.zip and trimui folder
+        extract_zip(bytes, Some(vec!["MinUI.zip", "trimui"]), |pr| app_state.update_progress(pr))?;
     }
+
+    println!("Extraction complete!");
+    app_state.set_progress(Some(Progress::Indeterminate));
 
     app_state.set_current_operation(Some("Update complete, preparing to reboot...".to_string()));
 
