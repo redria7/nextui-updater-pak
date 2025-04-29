@@ -1,11 +1,11 @@
 {
-  "name": "OTA Updater",
+  "name": "Updater",
   "version": "0.3.7",
   "type": "TOOL",
   "description": "Update NextUI over-the-air!",
   "author": "LanderN",
   "repo_url": "https://github.com/LanderN/nextui-updater-pak",
-  "release_filename": "nextui-updater-pak.zip",
+  "release_filename": "Updater.pak.zip",
   "banners": {
     "BRICK": "doc/screenshot.png"
   },

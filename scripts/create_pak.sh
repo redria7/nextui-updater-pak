@@ -3,7 +3,8 @@
 set -euo pipefail
 
 DIST_DIR="dist"
-UPDATER_DIR="$DIST_DIR/Tools/tg5040/Updater.pak"
+PAK_DIR_NAME="Updater.pak"
+UPDATER_DIR="$DIST_DIR/Tools/tg5040/$PAK_DIR_NAME"
 UPDATER_BINARY="target/aarch64-unknown-linux-gnu/release/nextui-updater-rs"
 LAUNCH_SCRIPT="$UPDATER_DIR/launch.sh"
 ZIP_FILE="nextui-updater-pak.zip"
@@ -31,3 +32,4 @@ done
 EOF
 
 (cd "$DIST_DIR" && zip -r "../$ZIP_FILE" .)
+(cd "$UPDATER_DIR" && zip -r "../../../../$PAK_DIR_NAME.zip" .)
