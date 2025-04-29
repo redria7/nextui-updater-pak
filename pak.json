@@ -1,0 +1,17 @@
+{
+  "name": "OTA Updater",
+  "version": "0.3.7",
+  "type": "TOOL",
+  "description": "Update NextUI over-the-air!",
+  "author": "LanderN",
+  "repo_url": "https://github.com/LanderN/nextui-updater-pak",
+  "release_filename": "nextui-updater-pak.zip",
+  "banners": {
+    "BRICK": "doc/screenshot.png"
+  },
+  "platforms": [
+    "tg5040"
+  ],
+  "update_ignore": [],
+  "launch": "launch.sh"
+}
