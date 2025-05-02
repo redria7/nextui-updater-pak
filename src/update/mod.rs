@@ -4,14 +4,23 @@ use crate::{
 };
 use bytes::Bytes;
 use fetching::{download, fetch_latest_release, fetch_tag};
+use regex::Regex;
 
 use std::{
-    fs::File, io::{Cursor, Read, Write}, path::PathBuf, process::exit, thread
+    fs::File,
+    io::{Cursor, Read, Write},
+    path::PathBuf,
+    process::exit,
+    thread,
 };
 
 mod fetching;
 
-fn extract_zip(bytes: Bytes, filter: Option<Vec<&str>>, progress_cb: impl Fn(f32)) -> Result<()> {
+fn extract_zip<T: Fn(&str) -> bool>(
+    bytes: Bytes,
+    filter: T,
+    progress_cb: impl Fn(f32),
+) -> Result<()> {
     pub fn file_write_all_bytes(path: &PathBuf, bytes: &[u8]) -> Result<usize> {
         let mut file = File::create(path)?;
         file.set_len(0)?;
@@ -24,24 +33,20 @@ fn extract_zip(bytes: Bytes, filter: Option<Vec<&str>>, progress_cb: impl Fn(f32
     let archive_len = archive.len();
 
     for file_number in 0..archive_len {
-
         let mut next = archive.by_index(file_number)?;
 
         let sanitized_name = next.mangled_name();
 
-        if filter.is_some() && !filter.as_ref().unwrap().iter().any(|f| sanitized_name.starts_with(f)) {
+        if !filter(sanitized_name.as_os_str().to_string_lossy().as_ref()) {
             println!("Skipping file: {sanitized_name:#?}");
             continue;
         }
 
         if next.is_dir() {
-
             let extracted_folder_path = target_directory.join(sanitized_name);
             std::fs::create_dir_all(&extracted_folder_path)?;
             println!("Created directory: {}", extracted_folder_path.display());
-
         } else if next.is_file() {
-
             let mut buffer: Vec<u8> = Vec::new();
             let _bytes_read = next.read_to_end(&mut buffer)?;
             let extracted_file_path = target_directory.join(sanitized_name);
@@ -89,9 +94,13 @@ pub fn self_update(app_state: &AppStateManager) -> Result<()> {
     std::fs::rename(&current_binary, current_binary.with_extension("bak"))?;
 
     // Extract the update package
-    let result = extract_zip(bytes, None, |pr| {
-        app_state.update_progress(pr);
-    });
+    let result = extract_zip(
+        bytes,
+        |_| true,
+        |pr| {
+            app_state.update_progress(pr);
+        },
+    );
 
     println!("Extraction complete!");
     app_state.set_progress(Some(Progress::Indeterminate));
@@ -207,11 +216,48 @@ pub fn update_nextui(app_state: &AppStateManager, full: bool) -> Result<()> {
 
     // Extract the update package
     if full {
-        // Full update, extract all files
-        extract_zip(bytes, None, |pr| app_state.update_progress(pr))?;
+        let emu_tag_re = Regex::new(r"\((?<emu>\w+)\)").expect("Failed to compile regex");
+        // Full update, extract all files, except for Roms folders which already exist
+        extract_zip(
+            bytes,
+            |file| {
+                if file.starts_with("Roms/") {
+                    // Extract the emu tag from the folder name
+                    if let Some(captures) = emu_tag_re.captures(file) {
+                        if let Some(emu) = captures.name("emu").map(|c| c.as_str()) {
+                            // Check if the emu tag already exists in the roms folder
+                            if std::fs::read_dir(PathBuf::from(SDCARD_ROOT).join("Roms"))
+                                .map(|d| {
+                                    d.filter_map(std::result::Result::ok).any(|e| {
+                                        e.file_name()
+                                            .to_string_lossy()
+                                            .contains(format!("({emu})").as_str())
+                                    })
+                                })
+                                .unwrap_or(false)
+                            {
+                                println!("Roms folder for {emu} already exists, skipping");
+                                return false;
+                            }
+                        }
+                    }
+                }
+
+                true
+            },
+            |pr| app_state.update_progress(pr),
+        )?;
     } else {
         // "Quick" update, just extract MinUI.zip and trimui folder
-        extract_zip(bytes, Some(vec!["MinUI.zip", "trimui"]), |pr| app_state.update_progress(pr))?;
+        extract_zip(
+            bytes,
+            |file| {
+                ["MinUI.zip", "trimui"]
+                    .iter()
+                    .any(|prefix| file.starts_with(prefix))
+            },
+            |pr| app_state.update_progress(pr),
+        )?;
     }
 
     println!("Extraction complete!");
