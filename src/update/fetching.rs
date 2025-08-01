@@ -40,6 +40,21 @@ pub fn fetch_latest_release(repo: &str) -> Result<Release> {
     Ok(response.json()?)
 }
 
+pub fn fetch_all_releases(repo: &str) -> Result<Vec<Release>> {
+    let response = get_client()
+        .get(format!(
+            "https://api.github.com/repos/{repo}/releases?per_page=50"
+        ))
+        .header("User-Agent", USER_AGENT)
+        .send()?;
+
+    if !response.status().is_success() {
+        return Err(format!("GitHub API request failed: {}", response.status()).into());
+    }
+
+    Ok(response.json()?)
+}
+
 pub fn fetch_tag(repo: &str, tag: &str) -> Result<Tag> {
     let response = get_client()
         .get(format!("https://api.github.com/repos/{repo}/tags"))
