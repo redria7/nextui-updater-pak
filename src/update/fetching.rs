@@ -7,7 +7,6 @@ use reqwest::blocking::Client;
 use reqwest::IntoUrl;
 
 use crate::github::{Release, Tag};
-
 use crate::Result;
 
 const USER_AGENT: &str = concatcp!("NextUIUpdater/", env!("CARGO_PKG_VERSION"));
@@ -40,7 +39,7 @@ pub fn fetch_latest_release(repo: &str) -> Result<Release> {
     Ok(response.json()?)
 }
 
-pub fn fetch_all_releases(repo: &str) -> Result<Vec<Release>> {
+pub fn fetch_releases(repo: &str) -> Result<Vec<Release>> {
     let response = get_client()
         .get(format!(
             "https://api.github.com/repos/{repo}/releases?per_page=50"
@@ -55,9 +54,9 @@ pub fn fetch_all_releases(repo: &str) -> Result<Vec<Release>> {
     Ok(response.json()?)
 }
 
-pub fn fetch_tag(repo: &str, tag: &str) -> Result<Tag> {
+pub fn fetch_tags(repo: &str) -> Result<Vec<Tag>> {
     let response = get_client()
-        .get(format!("https://api.github.com/repos/{repo}/tags"))
+        .get(format!("https://api.github.com/repos/{repo}/tags?per_page=70"))
         .header("User-Agent", USER_AGENT)
         .send()?;
 
@@ -67,9 +66,7 @@ pub fn fetch_tag(repo: &str, tag: &str) -> Result<Tag> {
 
     let tags: Vec<Tag> = response.json()?;
 
-    let tag = tags.iter().find(|t| t.name == tag).ok_or("Tag not found")?;
-
-    Ok(tag.clone())
+    Ok(tags.clone())
 }
 
 pub fn download<U: IntoUrl>(url: U, progress_cb: impl Fn(f32)) -> Result<Bytes> {

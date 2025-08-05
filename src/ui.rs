@@ -20,30 +20,60 @@ const FONTS: [&str; 2] = ["BPreplayBold-unhinted.otf", "chillroundm.ttf"];
 
 fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Response {
     let current_version = app_state.current_version();
-    let latest_release = app_state.nextui_release().clone();
-    let latest_tag = app_state.nextui_tag().clone();
+    let mut latest_release = app_state.nextui_release().clone();
+    let mut latest_tag = app_state.nextui_tag().clone();
     let mut update_available = true;
+
+    if app_state.release_selection_menu() {
+        let index = app_state.nextui_releases_and_tags_index().ok_or("No index found")?;
+        let relase_and_tag_vector = app_state.nextui_releases_and_tags().ok_or("No release found")?;
+        latest_release = Some(relase_and_tag_vector[index].release);
+        latest_tag = Some(relase_and_tag_vector[index].tag);
+    }
 
     // Show release information if available
     match (current_version, latest_tag, latest_release) {
         (Some(current_version), Some(tag), _) => {
             if tag.commit.sha.starts_with(&current_version) {
-                ui.label(
-                    RichText::new(format!(
-                        "You currently have the latest available version:\nNextUI {}",
-                        tag.name
-                    ))
-                    .size(10.0),
-                );
+                if app_state.release_selection_menu() {
+                    // selection view
+                    ui.label(
+                        RichText::new(format!(
+                            "You currently have this version:\nNextUI {}",
+                            tag.name
+                        ))
+                        .size(10.0),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(format!(
+                            "You currently have the latest available version:\nNextUI {}",
+                            tag.name
+                        ))
+                        .size(10.0),
+                    );
+                }
                 update_available = false;
             } else {
-                ui.label(
-                    RichText::new(format!("New version available: NextUI {}", tag.name)).size(10.0),
-                );
+                if app_state.release_selection_menu() {
+                    // selection view
+                    ui.label(
+                        RichText::new(format!("Version available: NextUI {}", tag.name)).size(10.0),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(format!("New version available: NextUI {}", tag.name)).size(10.0),
+                    );
+                }
             }
         }
         (_, _, Some(release)) => {
-            let version = format!("Latest version: NextUI {}", release.tag_name);
+            if app_state.release_selection_menu() {
+                // selection view
+                let version = format!("Version: NextUI {}", release.tag_name);
+            } else {
+                let version = format!("Latest version: NextUI {}", release.tag_name);
+            }
             ui.label(RichText::new(version).size(10.0));
         }
         _ => {
@@ -115,6 +145,7 @@ fn controller_to_key(button: sdl2::controller::Button) -> Option<sdl2::keyboard:
         sdl2::controller::Button::DPadRight => Some(sdl2::keyboard::Keycode::Right),
         sdl2::controller::Button::B => Some(sdl2::keyboard::Keycode::Return),
         sdl2::controller::Button::A => Some(sdl2::keyboard::Keycode::Escape),
+        sdl2::controller::Button::Y => Some(sdl2::keyboard::Keycode::X),
         _ => None,
     }
 }
@@ -267,11 +298,19 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                 // Check application state
                 let update_in_progress = app_state.current_operation().is_some();
 
-                ui.label(
-                    RichText::new(format!("NextUI Updater {}", env!("CARGO_PKG_VERSION")))
-                        .color(Color32::from_rgb(150, 150, 150))
-                        .size(10.0),
-                );
+                if app_state.release_selection_menu() {
+                    ui.label(
+                        RichText::new(format!("NextUI Updater {} Release Selector (B Returns)", env!("CARGO_PKG_VERSION")))
+                            .color(Color32::from_rgb(150, 150, 150))
+                            .size(10.0),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(format!("NextUI Updater {}", env!("CARGO_PKG_VERSION")))
+                            .color(Color32::from_rgb(150, 150, 150))
+                            .size(10.0),
+                    );
+                }
                 ui.add_space(4.0);
 
                 ui.add_enabled_ui(!update_in_progress, |ui| {
@@ -378,8 +417,11 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
         window.gl_swap_window();
 
         let handle_back_button = || {
-            // for now we always quit
-            app_state.set_should_quit(true);
+            if app_state.release_selection_menu() {
+                app_state.set_release_selection_menu(false);
+            } else {
+                app_state.set_should_quit(true);
+            }
         };
 
         // Process events
@@ -407,6 +449,26 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                     if button == sdl2::controller::Button::A {
                         // Exit with "B" button
                         handle_back_button();
+                    }
+
+                    // Add left/right options in selection menu, and X button to reach selection menu
+                    if app_state.release_selection_menu() {
+                        let index = app_state.nextui_releases_and_tags_index().ok_or(0)?;
+                        let max_index = app_state.nextui_releases_and_tags().ok_or("no releases")?.len();
+                        if button == sdl2::controller::Button::DPadLeft {
+                            if index > 0 {
+                                app_state.set_nextui_releases_and_tags_index(index-1);
+                            }
+                        }
+                        if button == sdl2::controller::Button::DPadRight {
+                            if index < max_index-1 {
+                                app_state.set_nextui_releases_and_tags_index(index+1);
+                            }
+                        }
+                    } else {
+                        if button == sdl2::controller::Button::Y {
+                            app_state.set_release_selection_menu(true);
+                        }
                     }
 
                     if let Some(keycode) = controller_to_key(button) {

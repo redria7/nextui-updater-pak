@@ -22,3 +22,8 @@ pub struct Tag {
 pub struct Commit {
     pub sha: String,
 }
+
+pub struct ReleaseAndTag {
+    pub release: Release,
+    pub tag: Tag,
+}
