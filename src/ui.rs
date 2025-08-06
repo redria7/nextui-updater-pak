@@ -1,5 +1,5 @@
 use crate::app_state::{AppStateManager, Progress, Submenu};
-use crate::update::do_update;
+use crate::update::{do_update, do_backup};
 use egui::{Button, Color32, FullOutput, ProgressBar};
 use egui_backend::egui;
 use egui_backend::{sdl2::event::Event, DpiScaling, ShaderVersion};
@@ -25,10 +25,10 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
     let mut update_available = true;
 
     if app_state.release_selection_menu() {
-        let index = app_state.nextui_releases_and_tags_index().ok_or("No index found")?;
-        let relase_and_tag_vector = app_state.nextui_releases_and_tags().ok_or("No release found")?;
-        latest_release = Some(relase_and_tag_vector[index].release);
-        latest_tag = Some(relase_and_tag_vector[index].tag);
+        let index = app_state.nextui_releases_and_tags_index().unwrap_or(0);
+        let relase_and_tag_vector = app_state.nextui_releases_and_tags().unwrap();
+        latest_release = Some(relase_and_tag_vector[index].release.clone());
+        latest_tag = Some(relase_and_tag_vector[index].tag.clone());
     }
 
     // Show release information if available
@@ -38,19 +38,11 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
                 if app_state.release_selection_menu() {
                     // selection view
                     ui.label(
-                        RichText::new(format!(
-                            "You currently have this version:\nNextUI {}",
-                            tag.name
-                        ))
-                        .size(10.0),
+                        RichText::new(format!("Selected Version:\nNextUI {}\nThis version is currently already installed!", tag.name)).size(10.0),
                     );
                 } else {
                     ui.label(
-                        RichText::new(format!(
-                            "You currently have the latest available version:\nNextUI {}",
-                            tag.name
-                        ))
-                        .size(10.0),
+                        RichText::new(format!("You currently have the latest available version:\nNextUI {}", tag.name)).size(10.0),
                     );
                 }
                 update_available = false;
@@ -58,7 +50,7 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
                 if app_state.release_selection_menu() {
                     // selection view
                     ui.label(
-                        RichText::new(format!("Version available: NextUI {}", tag.name)).size(10.0),
+                        RichText::new(format!("Selected Version:\nNextUI {}", tag.name)).size(10.0),
                     );
                 } else {
                     ui.label(
@@ -70,11 +62,12 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
         (_, _, Some(release)) => {
             if app_state.release_selection_menu() {
                 // selection view
-                let version = format!("Version: NextUI {}", release.tag_name);
+                let version = format!("Selected Version:\nNextUI {}", release.tag_name);
+                ui.label(RichText::new(version).size(10.0));
             } else {
                 let version = format!("Latest version: NextUI {}", release.tag_name);
+                ui.label(RichText::new(version).size(10.0));
             }
-            ui.label(RichText::new(version).size(10.0));
         }
         _ => {
             ui.label(RichText::new("No release information available".to_string()).size(10.0));
@@ -453,16 +446,16 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
 
                     // Add left/right options in selection menu, and X button to reach selection menu
                     if app_state.release_selection_menu() {
-                        let index = app_state.nextui_releases_and_tags_index().ok_or(0)?;
-                        let max_index = app_state.nextui_releases_and_tags().ok_or("no releases")?.len();
+                        let index = app_state.nextui_releases_and_tags_index().unwrap_or(0);
+                        let max_index = app_state.nextui_releases_and_tags().unwrap().len();
                         if button == sdl2::controller::Button::DPadLeft {
-                            if index > 0 {
-                                app_state.set_nextui_releases_and_tags_index(index-1);
+                            if index < max_index-1 {
+                                app_state.set_nextui_releases_and_tags_index(Some(index+1));
                             }
                         }
                         if button == sdl2::controller::Button::DPadRight {
-                            if index < max_index-1 {
-                                app_state.set_nextui_releases_and_tags_index(index+1);
+                            if index > 0 {
+                                app_state.set_nextui_releases_and_tags_index(Some(index-1));
                             }
                         }
                     } else {

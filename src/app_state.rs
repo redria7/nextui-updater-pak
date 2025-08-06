@@ -16,7 +16,7 @@ pub struct AppState {
     current_version: Option<String>,
     nextui_release: Option<Release>,
     nextui_tag: Option<Tag>,
-    nextui_releases_and_tags: Options<Vec<ReleaseAndTag>>,
+    nextui_releases_and_tags: Option<Vec<ReleaseAndTag>>,
     nextui_releases_and_tags_index: Option<usize>,
     release_selection_menu: bool,
     current_operation: Option<String>,
