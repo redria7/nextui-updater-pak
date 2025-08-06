@@ -1,5 +1,5 @@
 use crate::app_state::{AppStateManager, Progress, Submenu};
-use crate::update::{do_update, do_backup};
+use crate::update::{do_update};
 use egui::{Button, Color32, FullOutput, ProgressBar};
 use egui_backend::egui;
 use egui_backend::{sdl2::event::Event, DpiScaling, ShaderVersion};
@@ -74,9 +74,38 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
         }
     }
 
+    if app_state.release_selection_menu() {
+        ui.add_space(8.0);
+        ui.label(RichText::new("WARNING\n\
+            Downgrades are not fully supported!\n\
+            Some settings may be lost, or may be unstable in an old version\n\
+            Manual editing of settings or files may be required")
+            .size(10.0),);
+    }
+
     ui.add_space(8.0);
 
-    if update_available {
+    if app_state.release_selection_menu() & !app_state.release_selection_confirmed() {
+        let back_button = ui.button("Return");
+        if back_button.clicked() {
+            app_state.set_release_selection_menu(false);
+        }
+
+        let confirm_button = ui.button("Continue to Update");
+        if confirm_button.clicked() {
+            app_state.set_release_selection_confirmed(true);
+        }
+
+        if back_button.has_focus() {
+            app_state.set_hint(Some("Return to Latest Version options".to_string()));
+        } else if confirm_button.has_focus() {
+            app_state.set_hint(Some("Open update options for selected version".to_string()));
+        } else {
+            app_state.set_hint(None);
+        }
+
+        back_button
+    } else if update_available {
         let quick_update_button = ui.add(Button::new("Quick Update"));
 
         // Initiate update if button clicked
@@ -114,11 +143,19 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
 
         let quit_button = ui.button("Quit");
         if quit_button.clicked() {
-            app_state.set_should_quit(true);
+            if app_state.release_selection_confirmed() {
+                app_state.set_release_selection_confirmed(false);
+            } else {
+                app_state.set_should_quit(true);
+            }
         }
 
         if quit_button.has_focus() {
-            app_state.set_hint(Some("Quit NextUI Updater".to_string()));
+            if app_state.release_selection_confirmed() {
+                app_state.set_hint(Some("Return to version selector".to_string()));
+            } else {
+                app_state.set_hint(Some("Quit NextUI Updater".to_string()));
+            }
         } else if force_button.has_focus() {
             app_state.set_hint(Some("Ignore current version".to_string()));
         } else {
@@ -291,9 +328,15 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                 // Check application state
                 let update_in_progress = app_state.current_operation().is_some();
 
-                if app_state.release_selection_menu() {
+                if app_state.release_selection_confirmed() {
                     ui.label(
-                        RichText::new(format!("NextUI Updater {} Release Selector (B Returns)", env!("CARGO_PKG_VERSION")))
+                        RichText::new(format!("NextUI Updater {} Version Update Options", env!("CARGO_PKG_VERSION")))
+                            .color(Color32::from_rgb(150, 150, 150))
+                            .size(10.0),
+                    );
+                } else if app_state.release_selection_menu() {
+                    ui.label(
+                        RichText::new(format!("NextUI Updater {} Version Selector", env!("CARGO_PKG_VERSION")))
                             .color(Color32::from_rgb(150, 150, 150))
                             .size(10.0),
                     );
@@ -410,7 +453,9 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
         window.gl_swap_window();
 
         let handle_back_button = || {
-            if app_state.release_selection_menu() {
+            if app_state.release_selection_confirmed() {
+                app_state.set_release_selection_confirmed(false);
+            } else if app_state.release_selection_menu() {
                 app_state.set_release_selection_menu(false);
             } else {
                 app_state.set_should_quit(true);
@@ -444,8 +489,10 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                         handle_back_button();
                     }
 
-                    // Add left/right options in selection menu, and X button to reach selection menu
-                    if app_state.release_selection_menu() {
+                    if app_state.release_selection_confirmed() {
+                        // no bonus buttons
+                    } else if app_state.release_selection_menu() {
+                        // Add left/right options in selection menu
                         let index = app_state.nextui_releases_and_tags_index().unwrap_or(0);
                         let max_index = app_state.nextui_releases_and_tags().unwrap().len();
                         if button == sdl2::controller::Button::DPadLeft {
@@ -459,6 +506,7 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                             }
                         }
                     } else {
+                        // Add X button to reach selection menu
                         if button == sdl2::controller::Button::Y {
                             app_state.set_release_selection_menu(true);
                         }

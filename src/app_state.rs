@@ -19,6 +19,7 @@ pub struct AppState {
     nextui_releases_and_tags: Option<Vec<ReleaseAndTag>>,
     nextui_releases_and_tags_index: Option<usize>,
     release_selection_menu: bool,
+    release_selection_confirmed: bool,
     current_operation: Option<String>,
     progress: Option<Progress>,
     error: Option<String>,
@@ -46,6 +47,7 @@ impl AppStateManager {
                 nextui_releases_and_tags: None,
                 nextui_releases_and_tags_index: None,
                 release_selection_menu: false,
+                release_selection_confirmed: false,
                 current_operation: None,
                 progress: None,
                 error: None,
@@ -111,6 +113,10 @@ impl AppStateManager {
         self.state.lock().release_selection_menu
     }
 
+    pub fn release_selection_confirmed(&self) -> bool {
+        self.state.lock().release_selection_confirmed
+    }
+
     // Setter methods
     pub fn set_submenu(&self, submenu: Submenu) {
         self.state.lock().submenu = submenu;
@@ -158,6 +164,10 @@ impl AppStateManager {
 
     pub fn set_release_selection_menu(&self, release_selection_menu: bool) {
         self.state.lock().release_selection_menu = release_selection_menu;
+    }
+
+    pub fn set_release_selection_confirmed(&self, release_selection_confirmed: bool) {
+        self.state.lock().release_selection_confirmed = release_selection_confirmed;
     }
 
     // Combined operations
