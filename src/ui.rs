@@ -78,7 +78,7 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
     if app_state.release_selection_menu() & !app_state.release_selection_confirmed() {
         ui.add_space(8.0);
         ui.label(RichText::new("WARNING\n\
-            Downgrades are not fully supported!\n\
+            Downgrades are not fully supported by NextUI!\n\
             Some settings may be lost or unstable in old versions\n\
             Manual editing of settings or files may be required")
             .size(10.0),);
