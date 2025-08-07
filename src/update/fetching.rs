@@ -42,7 +42,7 @@ pub fn fetch_latest_release(repo: &str) -> Result<Release> {
 pub fn fetch_releases(repo: &str) -> Result<Vec<Release>> {
     let response = get_client()
         .get(format!(
-            "https://api.github.com/repos/{repo}/releases?per_page=50"
+            "https://api.github.com/repos/{repo}/releases?per_page=100"
         ))
         .header("User-Agent", USER_AGENT)
         .send()?;
@@ -56,7 +56,7 @@ pub fn fetch_releases(repo: &str) -> Result<Vec<Release>> {
 
 pub fn fetch_tags(repo: &str) -> Result<Vec<Tag>> {
     let response = get_client()
-        .get(format!("https://api.github.com/repos/{repo}/tags?per_page=70"))
+        .get(format!("https://api.github.com/repos/{repo}/tags?per_page=100"))
         .header("User-Agent", USER_AGENT)
         .send()?;
 

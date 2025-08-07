@@ -23,6 +23,7 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
     let mut latest_release = app_state.nextui_release().clone();
     let mut latest_tag = app_state.nextui_tag().clone();
     let mut update_available = true;
+    let latest_discarded = app_state.nextui_tag().clone().is_none();
 
     if app_state.release_selection_menu() {
         let index = app_state.nextui_releases_and_tags_index().unwrap_or(0);
@@ -34,15 +35,16 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
     // Show release information if available
     match (current_version, latest_tag, latest_release) {
         (Some(current_version), Some(tag), _) => {
-            if tag.commit.sha.starts_with(&current_version) {
+            let selected_tag = hint_wrap_nextui_tag(app_state, tag.name);
+            if tag.commit.sha.starts_with(&current_version) & !latest_discarded {
                 if app_state.release_selection_menu() {
                     // selection view
                     ui.label(
-                        RichText::new(format!("Selected Version:\nNextUI {}\nThis version is currently already installed!", tag.name)).size(10.0),
+                        RichText::new(format!("Selected Version:\n{}\nThis version is currently already installed!", selected_tag)).size(10.0),
                     );
                 } else {
                     ui.label(
-                        RichText::new(format!("You currently have the latest available version:\nNextUI {}", tag.name)).size(10.0),
+                        RichText::new(format!("You currently have the latest available version:\n{}\nX to select different version", selected_tag)).size(10.0),
                     );
                 }
                 update_available = false;
@@ -50,11 +52,11 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
                 if app_state.release_selection_menu() {
                     // selection view
                     ui.label(
-                        RichText::new(format!("Selected Version:\nNextUI {}", tag.name)).size(10.0),
+                        RichText::new(format!("Selected Version:\n{}", selected_tag)).size(10.0),
                     );
                 } else {
                     ui.label(
-                        RichText::new(format!("New version available: NextUI {}", tag.name)).size(10.0),
+                        RichText::new(format!("New version available:\n{}\nX to select different version", selected_tag)).size(10.0),
                     );
                 }
             }
@@ -62,11 +64,10 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
         (_, _, Some(release)) => {
             if app_state.release_selection_menu() {
                 // selection view
-                let version = format!("Selected Version:\nNextUI {}", release.tag_name);
-                ui.label(RichText::new(version).size(10.0));
+                let selected_tag = hint_wrap_nextui_tag(app_state, release.tag_name);
+                ui.label(RichText::new(format!("Selected Version:\n{}", selected_tag)).size(10.0));
             } else {
-                let version = format!("Latest version: NextUI {}", release.tag_name);
-                ui.label(RichText::new(version).size(10.0));
+                ui.label(RichText::new(format!("Latest version:\nNextUI {}\nX to select different version", release.tag_name)).size(10.0));
             }
         }
         _ => {
@@ -74,11 +75,11 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
         }
     }
 
-    if app_state.release_selection_menu() {
+    if app_state.release_selection_menu() & !app_state.release_selection_confirmed() {
         ui.add_space(8.0);
         ui.label(RichText::new("WARNING\n\
             Downgrades are not fully supported!\n\
-            Some settings may be lost, or may be unstable in an old version\n\
+            Some settings may be lost or unstable in old versions\n\
             Manual editing of settings or files may be required")
             .size(10.0),);
     }
@@ -91,7 +92,7 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
             app_state.set_release_selection_menu(false);
         }
 
-        let confirm_button = ui.button("Continue to Update");
+        let confirm_button = ui.button("Accept Warning");
         if confirm_button.clicked() {
             app_state.set_release_selection_confirmed(true);
         }
@@ -99,7 +100,7 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
         if back_button.has_focus() {
             app_state.set_hint(Some("Return to Latest Version options".to_string()));
         } else if confirm_button.has_focus() {
-            app_state.set_hint(Some("Open update options for selected version".to_string()));
+            app_state.set_hint(Some("Confirm warning and open update options".to_string()));
         } else {
             app_state.set_hint(None);
         }
@@ -152,7 +153,7 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
 
         if quit_button.has_focus() {
             if app_state.release_selection_confirmed() {
-                app_state.set_hint(Some("Return to version selector".to_string()));
+                app_state.set_hint(Some("Return to warning".to_string()));
             } else {
                 app_state.set_hint(Some("Quit NextUI Updater".to_string()));
             }
@@ -292,6 +293,37 @@ fn load_font() -> Result<FontDefinitions> {
     })
 }
 
+fn hint_wrap_nextui_tag(app_state: &'static AppStateManager, tag_name: String) -> String {
+    let mut selected_tag = format!("NextUI {}", tag_name);
+    if !app_state.release_selection_menu() {
+        return selected_tag;
+    }
+    if !is_most_left_index(app_state) {
+        selected_tag = format!("<<     {}", selected_tag);
+    }
+    if !is_most_right_index(app_state) {
+        selected_tag = format!("{}     >>", selected_tag);
+    }
+    return selected_tag;
+}
+
+fn is_most_left_index(app_state: &'static AppStateManager) -> bool {
+    let index = app_state.nextui_releases_and_tags_index().unwrap_or(0);
+    let max_index = app_state.nextui_releases_and_tags().unwrap().len();
+    if index < max_index-1 {
+        return false;
+    }
+    return true;
+}
+
+fn is_most_right_index(app_state: &'static AppStateManager) -> bool {
+    let index = app_state.nextui_releases_and_tags_index().unwrap_or(0);
+    if index > 0 {
+        return false;
+    }
+    return true;
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
     // Initialize SDL and create window
@@ -330,13 +362,13 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
 
                 if app_state.release_selection_confirmed() {
                     ui.label(
-                        RichText::new(format!("NextUI Updater {} Version Update Options", env!("CARGO_PKG_VERSION")))
+                        RichText::new(format!("NextUI Updater {} Version Selector", env!("CARGO_PKG_VERSION")))
                             .color(Color32::from_rgb(150, 150, 150))
                             .size(10.0),
                     );
                 } else if app_state.release_selection_menu() {
                     ui.label(
-                        RichText::new(format!("NextUI Updater {} Version Selector", env!("CARGO_PKG_VERSION")))
+                        RichText::new(format!("NextUI Updater {} Version Selector Warning", env!("CARGO_PKG_VERSION")))
                             .color(Color32::from_rgb(150, 150, 150))
                             .size(10.0),
                     );
@@ -489,19 +521,16 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                         handle_back_button();
                     }
 
-                    if app_state.release_selection_confirmed() {
-                        // no bonus buttons
-                    } else if app_state.release_selection_menu() {
+                    if app_state.release_selection_menu() {
                         // Add left/right options in selection menu
                         let index = app_state.nextui_releases_and_tags_index().unwrap_or(0);
-                        let max_index = app_state.nextui_releases_and_tags().unwrap().len();
                         if button == sdl2::controller::Button::DPadLeft {
-                            if index < max_index-1 {
+                            if !is_most_left_index(app_state) {
                                 app_state.set_nextui_releases_and_tags_index(Some(index+1));
                             }
                         }
                         if button == sdl2::controller::Button::DPadRight {
-                            if index > 0 {
+                            if !is_most_right_index(app_state) {
                                 app_state.set_nextui_releases_and_tags_index(Some(index-1));
                             }
                         }
