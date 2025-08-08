@@ -27,13 +27,17 @@ fn extract_date_from_release(release: Release) -> String {
     return format!("\nReleased: {}", publish_date);
 }
 
-fn warning_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Response {
+fn warning_ui(ui: &mut egui::Ui) -> bool {
     ui.add_space(16.0);
     ui.label(RichText::new("WARNING\n\
         Downgrades are not fully supported by NextUI!\n\
         Some settings may be lost or unstable in old versions\n\
         Manual editing of settings or files may be required")
         .size(10.0),);
+    false
+}
+
+fn warning_ui_buttons(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Response {
     ui.add_space(8.0);
 
     let back_button = ui.button("Return");
@@ -59,7 +63,7 @@ fn warning_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::R
     back_button
 }
 
-fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Response {
+fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> bool {
     let current_version = app_state.current_version();
     let mut latest_release = app_state.nextui_release().clone();
     let mut latest_tag = app_state.nextui_tag().clone();
@@ -121,7 +125,10 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
             ui.label(RichText::new("No release information available".to_string()).size(10.0));
         }
     }
+    update_available
+}
 
+fn nextui_ui_buttons(ui: &mut egui::Ui, app_state: &'static AppStateManager, update_available: bool) -> egui::Response {
     ui.add_space(8.0);
 
     if update_available {
@@ -403,9 +410,14 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
 
                 ui.add_enabled_ui(!update_in_progress, |ui| {
                     let submenu = app_state.submenu();
-                    let menu = match submenu {
+                    let update_available = match submenu {
                         Submenu::NextUI => nextui_ui(ui, app_state),
-                        Submenu::Warning => warning_ui(ui, app_state),
+                        Submenu::Warning => warning_ui(ui),
+                    };
+
+                    let menu = match submenu {
+                        Submenu::NextUI => nextui_ui_buttons(ui, app_state, update_available),
+                        Submenu::Warning => warning_ui_buttons(ui, app_state),
                     };
 
                     // Focus the first available button for controller navigation
