@@ -30,6 +30,7 @@ pub struct AppState {
 #[derive(Clone, Copy)]
 pub enum Submenu {
     NextUI,
+    Warning,
 }
 
 pub struct AppStateManager {

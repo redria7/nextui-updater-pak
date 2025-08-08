@@ -10,6 +10,8 @@ pub struct Asset {
 pub struct Release {
     pub tag_name: String,
     pub assets: Vec<Asset>,
+    pub published_at: String,
+    pub body: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]

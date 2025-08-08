@@ -1,5 +1,6 @@
 use crate::app_state::{AppStateManager, Progress, Submenu};
 use crate::update::{do_update};
+use crate::github::{Release};
 use egui::{Button, Color32, FullOutput, ProgressBar};
 use egui_backend::egui;
 use egui_backend::{sdl2::event::Event, DpiScaling, ShaderVersion};
@@ -18,6 +19,46 @@ const WINDOW_HEIGHT: u32 = 768;
 const DPI_SCALE: f32 = 4.0;
 const FONTS: [&str; 2] = ["BPreplayBold-unhinted.otf", "chillroundm.ttf"];
 
+fn extract_date_from_release(release: Release) -> String {
+    let mut publish_date = release.published_at;
+    if let Some(index) = publish_date.find("T") {
+        publish_date = (&publish_date[..index]).to_string();
+    }
+    return format!("\nReleased: {}", publish_date);
+}
+
+fn warning_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Response {
+    ui.add_space(16.0);
+    ui.label(RichText::new("WARNING\n\
+        Downgrades are not fully supported by NextUI!\n\
+        Some settings may be lost or unstable in old versions\n\
+        Manual editing of settings or files may be required")
+        .size(10.0),);
+    ui.add_space(8.0);
+
+    let back_button = ui.button("Return");
+    if back_button.clicked() {
+        app_state.set_release_selection_menu(false);
+        app_state.set_submenu(Submenu::NextUI);
+    }
+
+    let confirm_button = ui.button("Accept Warning");
+    if confirm_button.clicked() {
+        app_state.set_release_selection_confirmed(true);
+        app_state.set_submenu(Submenu::NextUI);
+    }
+
+    if back_button.has_focus() {
+        app_state.set_hint(Some("Return to Latest Version options".to_string()));
+    } else if confirm_button.has_focus() {
+        app_state.set_hint(Some("Confirm warning and open update options".to_string()));
+    } else {
+        app_state.set_hint(None);
+    }
+
+    back_button
+}
+
 fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Response {
     let current_version = app_state.current_version();
     let mut latest_release = app_state.nextui_release().clone();
@@ -32,81 +73,58 @@ fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> egui::Re
         latest_tag = Some(relase_and_tag_vector[index].tag.clone());
     }
 
-    if app_state.release_selection_menu() & !app_state.release_selection_confirmed() {
-        ui.add_space(16.0);
-        ui.label(RichText::new("WARNING\n\
-            Downgrades are not fully supported by NextUI!\n\
-            Some settings may be lost or unstable in old versions\n\
-            Manual editing of settings or files may be required")
-            .size(10.0),);
-    } else {
-        // Show release information if available
-        match (current_version, latest_tag, latest_release) {
-            (Some(current_version), Some(tag), _) => {
-                let selected_tag = hint_wrap_nextui_tag(app_state, tag.name);
-                if tag.commit.sha.starts_with(&current_version) & !latest_discarded {
-                    if app_state.release_selection_menu() {
-                        // selection view
-                        ui.label(
-                            RichText::new(format!("Selected Version:\n{}\nThis version is currently already installed!", selected_tag)).size(10.0),
-                        );
-                    } else {
-                        ui.label(
-                            RichText::new(format!("You currently have the latest available version:\n{}\nX to select different version", selected_tag)).size(10.0),
-                        );
-                    }
-                    update_available = false;
-                } else {
-                    if app_state.release_selection_menu() {
-                        // selection view
-                        ui.label(
-                            RichText::new(format!("Selected Version:\n{}", selected_tag)).size(10.0),
-                        );
-                    } else {
-                        ui.label(
-                            RichText::new(format!("New version available:\n{}\nX to select different version", selected_tag)).size(10.0),
-                        );
-                    }
-                }
-            }
-            (_, _, Some(release)) => {
+    // Show release information if available
+    match (current_version, latest_tag, latest_release) {
+        (Some(current_version), Some(tag), Some(release)) => {
+            let selected_tag = hint_wrap_nextui_tag(app_state, tag.clone().name);
+            if tag.commit.sha.starts_with(&current_version) & !latest_discarded {
                 if app_state.release_selection_menu() {
                     // selection view
-                    let selected_tag = hint_wrap_nextui_tag(app_state, release.tag_name);
-                    ui.label(RichText::new(format!("Selected Version:\n{}", selected_tag)).size(10.0));
+                    ui.label(
+                        RichText::new(format!("Selected Version:\n{}{}\nThis version is currently already installed!", 
+                        selected_tag, extract_date_from_release(release.clone()))).size(10.0),
+                    );
                 } else {
-                    ui.label(RichText::new(format!("Latest version:\nNextUI {}\nX to select different version", release.tag_name)).size(10.0));
+                    ui.label(
+                        RichText::new(format!("You currently have the latest available version:\n{}{}\nX to select different version", 
+                        selected_tag, extract_date_from_release(release.clone()))).size(10.0),
+                    );
+                }
+                update_available = false;
+            } else {
+                if app_state.release_selection_menu() {
+                    // selection view
+                    ui.label(
+                        RichText::new(format!("Selected Version:\n{}{}", 
+                        selected_tag, extract_date_from_release(release.clone()))).size(10.0),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(format!("New version available:\n{}{}\nX to select different version", 
+                        selected_tag, extract_date_from_release(release.clone()))).size(10.0),
+                    );
                 }
             }
-            _ => {
-                ui.label(RichText::new("No release information available".to_string()).size(10.0));
+        }
+        (_, _, Some(release)) => {
+            if app_state.release_selection_menu() {
+                // selection view
+                let selected_tag = hint_wrap_nextui_tag(app_state, release.clone().tag_name);
+                ui.label(RichText::new(format!("Selected Version:\n{}{}", 
+                        selected_tag, extract_date_from_release(release.clone()))).size(10.0));
+            } else {
+                ui.label(RichText::new(format!("Latest version:\nNextUI {}{}\nX to select different version", 
+                        release.tag_name, extract_date_from_release(release.clone()))).size(10.0));
             }
+        }
+        _ => {
+            ui.label(RichText::new("No release information available".to_string()).size(10.0));
         }
     }
 
     ui.add_space(8.0);
 
-    if app_state.release_selection_menu() & !app_state.release_selection_confirmed() {
-        let back_button = ui.button("Return");
-        if back_button.clicked() {
-            app_state.set_release_selection_menu(false);
-        }
-
-        let confirm_button = ui.button("Accept Warning");
-        if confirm_button.clicked() {
-            app_state.set_release_selection_confirmed(true);
-        }
-
-        if back_button.has_focus() {
-            app_state.set_hint(Some("Return to Latest Version options".to_string()));
-        } else if confirm_button.has_focus() {
-            app_state.set_hint(Some("Confirm warning and open update options".to_string()));
-        } else {
-            app_state.set_hint(None);
-        }
-
-        back_button
-    } else if update_available {
+    if update_available {
         let quick_update_button = ui.add(Button::new("Quick Update"));
 
         // Initiate update if button clicked
@@ -387,6 +405,7 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                     let submenu = app_state.submenu();
                     let menu = match submenu {
                         Submenu::NextUI => nextui_ui(ui, app_state),
+                        Submenu::Warning => warning_ui(ui, app_state),
                     };
 
                     // Focus the first available button for controller navigation
@@ -540,6 +559,9 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                         // Add X button to reach selection menu
                         if button == sdl2::controller::Button::Y {
                             app_state.set_release_selection_menu(true);
+                            if !app_state.release_selection_confirmed() {
+                                app_state.set_submenu(Submenu::Warning);
+                            }
                         }
                     }
 
