@@ -63,6 +63,46 @@ fn warning_ui_buttons(ui: &mut egui::Ui, app_state: &'static AppStateManager) ->
     back_button
 }
 
+fn nextui_release_details(ui: &mut egui::Ui, app_state: &'static AppStateManager) {//-> egui::Response {
+    //ui.add_space(8.0);
+
+    let mut latest_release = app_state.nextui_release().clone();
+
+    if app_state.release_selection_menu() {
+        let index = app_state.nextui_releases_and_tags_index().unwrap_or(0);
+        let relase_and_tag_vector = app_state.nextui_releases_and_tags().unwrap();
+        latest_release = Some(relase_and_tag_vector[index].release.clone());
+    }
+
+    //let mut change_notes = "".to_string();
+
+    match latest_release {
+        Some(release) => {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let mut change_notes = release.body;
+                let release_scroll = ui.label(RichText::new(change_notes).size(10.0),);
+                // let release_scroll = ui.add(
+                //     egui::TextEdit::multiline(&mut change_notes).desired_width(f32::INFINITY)
+                // );
+                ui.memory_mut(|r| {
+                    if r.focused().is_none() {
+                        r.request_focus(release_scroll.id);
+                    }
+                });
+            });
+        },
+        _ => {}
+    }
+
+    // let notes_scroll = ui.add(
+    //     egui::TextEdit::multiline(&mut change_notes).desired_width(f32::INFINITY)
+    // );
+
+    app_state.set_hint(Some("(A) Open Update Options".to_string()));
+
+    //notes_scroll
+}
+
 fn nextui_ui(ui: &mut egui::Ui, app_state: &'static AppStateManager) -> bool {
     let current_version = app_state.current_version();
     let mut latest_release = app_state.nextui_release().clone();
@@ -415,17 +455,30 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                         Submenu::Warning => warning_ui(ui),
                     };
 
-                    let menu = match submenu {
-                        Submenu::NextUI => nextui_ui_buttons(ui, app_state, update_available),
-                        Submenu::Warning => warning_ui_buttons(ui, app_state),
+                    match submenu {
+                        Submenu::NextUI => {
+                            if app_state.release_buttons_menu() {
+                                let menu = nextui_ui_buttons(ui, app_state, update_available);
+                                // Focus the first available button for controller navigation
+                                ui.memory_mut(|r| {
+                                    if r.focused().is_none() {
+                                        r.request_focus(menu.id);
+                                    }
+                                });
+                            } else {
+                                nextui_release_details(ui, app_state);
+                            }
+                        },
+                        Submenu::Warning => {
+                            let menu = warning_ui_buttons(ui, app_state);
+                            // Focus the first available button for controller navigation
+                            ui.memory_mut(|r| {
+                                if r.focused().is_none() {
+                                    r.request_focus(menu.id);
+                                }
+                            });
+                        },
                     };
-
-                    // Focus the first available button for controller navigation
-                    ui.memory_mut(|r| {
-                        if r.focused().is_none() {
-                            r.request_focus(menu.id);
-                        }
-                    });
                 });
 
                 ui.add_space(8.0);
@@ -518,7 +571,11 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
         window.gl_swap_window();
 
         let handle_back_button = || {
-            if app_state.release_selection_menu() {
+            if app_state.release_selection_menu() & !app_state.release_selection_confirmed() {
+                app_state.set_release_selection_menu(false);
+            } else if app_state.release_buttons_menu() {
+                app_state.set_release_buttons_menu(false);
+            } else if app_state.release_selection_menu() {
                 app_state.set_release_selection_menu(false);
             } else {
                 app_state.set_should_quit(true);
@@ -573,6 +630,11 @@ pub fn run_ui(app_state: &'static AppStateManager) -> Result<()> {
                             app_state.set_release_selection_menu(true);
                             if !app_state.release_selection_confirmed() {
                                 app_state.set_submenu(Submenu::Warning);
+                            }
+                        }
+                        if !app_state.release_buttons_menu() {
+                            if button == sdl2::controller::Button::B {
+                                app_state.set_release_buttons_menu(true);
                             }
                         }
                     }
